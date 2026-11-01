@@ -1,6 +1,6 @@
 <?php
 
-namespace Frame\Testbed;
+namespace Frame\SiteCheck;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;

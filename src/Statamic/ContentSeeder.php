@@ -1,6 +1,6 @@
 <?php
 
-namespace Frame\Testbed\Statamic;
+namespace Frame\SiteCheck\Statamic;
 
 use Illuminate\Support\Collection as LaravelCollection;
 use Illuminate\Support\Str;
@@ -243,7 +243,7 @@ class ContentSeeder
 
     protected function value(Field $field): mixed
     {
-        // Site-specific meanings (an icon file name, a video ID…) come from testbed.yaml `values`, by field handle.
+        // Site-specific meanings (an icon file name, a video ID…) come from site-check.yaml `values`, by field handle.
         if (array_key_exists($field->handle(), $this->config['values'] ?? [])) {
             return $this->config['values'][$field->handle()];
         }
@@ -255,7 +255,7 @@ class ContentSeeder
             'slug' => fake()->slug(3),
             'textarea', 'markdown' => fake()->paragraph(),
             'bard' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => fake()->paragraph()]]]],
-            'code' => ['code' => '<p>Testbed</p>', 'mode' => 'htmlmixed'],
+            'code' => ['code' => '<p>Site check</p>', 'mode' => 'htmlmixed'],
             'integer' => fake()->numberBetween(1, 10),
             'float' => fake()->randomFloat(2, 1, 10),
             'range' => (int) $field->get('min', 0),
@@ -290,7 +290,7 @@ class ContentSeeder
 
         return match (true) {
             $field->get('input_type') === 'url', (bool) preg_match('/url|link|href/', $handle) => 'https://example.test/',
-            $field->get('input_type') === 'email', str_contains($handle, 'email') => 'testbed@example.test',
+            $field->get('input_type') === 'email', str_contains($handle, 'email') => 'site-check@example.test',
             in_array($field->get('input_type'), ['number', 'tel'], true) => (string) fake()->numberBetween(1, 100),
             default => fake()->sentence(4),
         };
@@ -360,13 +360,13 @@ class ContentSeeder
     protected function placeholder($container): string
     {
         $index = ($this->placeholders++ % 6) + 1;
-        $path = "testbed/placeholder-{$index}.jpg";
+        $path = "site-check/placeholder-{$index}.jpg";
 
         if (! $container->disk()->exists($path)) {
             $image = imagecreatetruecolor(1200, 800);
             $colours = [[51, 102, 153], [153, 102, 51], [51, 153, 102], [102, 51, 153], [153, 51, 102], [102, 153, 51]];
             imagefill($image, 0, 0, imagecolorallocate($image, ...$colours[$index - 1]));
-            imagestring($image, 5, 40, 40, "Testbed placeholder {$index}", imagecolorallocate($image, 255, 255, 255));
+            imagestring($image, 5, 40, 40, "Site check placeholder {$index}", imagecolorallocate($image, 255, 255, 255));
 
             ob_start();
             imagejpeg($image, null, 80);

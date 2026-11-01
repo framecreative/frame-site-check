@@ -1,12 +1,12 @@
 <?php
 
-namespace Frame\Testbed\Commands;
+namespace Frame\SiteCheck\Commands;
 
-use Frame\Testbed\Algolia;
+use Frame\SiteCheck\Algolia;
 
-class AlgoliaResetCommand extends TestbedCommand
+class AlgoliaResetCommand extends SiteCheckCommand
 {
-    protected $signature = 'testbed:algolia-reset';
+    protected $signature = 'site-check:algolia-reset';
 
     protected $description = 'Delete every index in the configured (test) Algolia app';
 

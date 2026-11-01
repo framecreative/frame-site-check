@@ -1,18 +1,18 @@
 <?php
 
-namespace Frame\Testbed\Commands;
+namespace Frame\SiteCheck\Commands;
 
-use Frame\Testbed\Algolia;
+use Frame\SiteCheck\Algolia;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
-class PreflightCommand extends TestbedCommand
+class PreflightCommand extends SiteCheckCommand
 {
-    protected $signature = 'testbed:preflight';
+    protected $signature = 'site-check:preflight';
 
-    protected $description = 'Check the testbed configuration before any data is touched';
+    protected $description = 'Check the site check configuration before any data is touched';
 
     /** @var array<int, string> */
     protected array $failures = [];
@@ -51,11 +51,11 @@ class PreflightCommand extends TestbedCommand
     {
         $others = array_filter(
             glob(base_path('.env*')) ?: [],
-            fn ($file) => basename($file) !== '.env.testbed',
+            fn ($file) => basename($file) !== '.env.site-check',
         );
 
         foreach ($others as $file) {
-            $this->flag(basename($file).' is visible inside the container. Only .env.testbed may be present; check the sync excludes.');
+            $this->flag(basename($file).' is visible inside the container. Only .env.site-check may be present; check the sync excludes.');
         }
     }
 
@@ -63,19 +63,19 @@ class PreflightCommand extends TestbedCommand
     {
         foreach ($this->settings->get('seeders', []) as $seeder) {
             if (! class_exists($seeder)) {
-                $this->flag("Seeder {$seeder} in testbed.yaml doesn't exist.");
+                $this->flag("Seeder {$seeder} in site-check.yaml doesn't exist.");
             }
         }
 
         foreach ($this->settings->accounts() as $index => $account) {
             foreach (['key', 'email', 'password'] as $field) {
                 if (empty($account[$field])) {
-                    $this->flag("Account #{$index} in testbed.yaml is missing \"{$field}\".");
+                    $this->flag("Account #{$index} in site-check.yaml is missing \"{$field}\".");
                 }
             }
 
             if (! empty($account['email']) && ! str_ends_with($account['email'], '@example.test')) {
-                $this->flag("Account {$account['email']} in testbed.yaml must use an @example.test address.");
+                $this->flag("Account {$account['email']} in site-check.yaml must use an @example.test address.");
             }
         }
 
@@ -87,7 +87,7 @@ class PreflightCommand extends TestbedCommand
     protected function checkSafety(): void
     {
         if (config('statamic.git.enabled')) {
-            $this->flag('Statamic git automation is enabled (statamic.git.enabled). It must be off in the testbed.');
+            $this->flag('Statamic git automation is enabled (statamic.git.enabled). It must be off in the site check.');
         }
 
         if (! in_array(config('mail.default'), ['log', 'array', 'smtp'], true)) {
@@ -104,7 +104,7 @@ class PreflightCommand extends TestbedCommand
 
         foreach ($this->settings->get('must_be_empty', []) as $key) {
             if (filled(env($key))) {
-                $this->flag("{$key} is set. It must be empty in the testbed so the integration can't make real requests.");
+                $this->flag("{$key} is set. It must be empty in the site check so the integration can't make real requests.");
             }
         }
     }
@@ -119,7 +119,7 @@ class PreflightCommand extends TestbedCommand
             }
 
             try {
-                $this->checkUrl("filesystem disk \"{$disk}\"", Storage::disk($disk)->url('testbed/check.jpg'));
+                $this->checkUrl("filesystem disk \"{$disk}\"", Storage::disk($disk)->url('site-check/check.jpg'));
             } catch (Throwable $e) {
                 $this->flag("Filesystem disk \"{$disk}\" can't build a URL: {$e->getMessage()}");
             }
@@ -154,13 +154,13 @@ class PreflightCommand extends TestbedCommand
     {
         $php = (string) $this->settings->get('php', '8.3');
         if (PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION !== $php) {
-            $this->flag('PHP is '.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION." but testbed.yaml asks for {$php}.");
+            $this->flag('PHP is '.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION." but site-check.yaml asks for {$php}.");
         }
 
         $node = (string) $this->settings->get('node', '22');
         $installed = trim((string) shell_exec('node -v 2>/dev/null'));
         if (! str_starts_with($installed, "v{$node}.")) {
-            $this->flag("Node is {$installed} but testbed.yaml asks for {$node}.");
+            $this->flag("Node is {$installed} but site-check.yaml asks for {$node}.");
         }
     }
 
@@ -173,36 +173,36 @@ class PreflightCommand extends TestbedCommand
         ], fn ($value) => blank($value));
 
         foreach (array_keys($missing) as $key) {
-            $this->flag("{$key} is not set in .env.testbed.");
+            $this->flag("{$key} is not set in .env.site-check.");
         }
 
         if ($missing) {
             return;
         }
 
-        $index = 'testbed_preflight';
+        $index = 'site_check_preflight';
 
         try {
             $response = Algolia::admin()->listIndexes();
             if (! $response->successful()) {
-                $this->flag("ALGOLIA_SECRET in .env.testbed was rejected by Algolia ({$response->status()} {$response->json('message')}). Check the test app's admin API key.");
+                $this->flag("ALGOLIA_SECRET in .env.site-check was rejected by Algolia ({$response->status()} {$response->json('message')}). Check the test app's admin API key.");
 
                 return;
             }
 
-            $write = Algolia::admin()->addObject($index, ['testbed' => true]);
+            $write = Algolia::admin()->addObject($index, ['site_check' => true]);
             if (! $write->successful()) {
                 $this->flag("ALGOLIA_SECRET can't write to Algolia ({$write->status()} {$write->json('message')}). The admin key needs addObject and deleteIndex.");
             }
 
-            $searchWrite = Algolia::search()->addObject($index, ['testbed' => true]);
+            $searchWrite = Algolia::search()->addObject($index, ['site_check' => true]);
             if ($searchWrite->successful()) {
                 $this->flag('ALGOLIA_SEARCH_KEY can write to Algolia. It is built into the front end, so it must be a search-only key.');
             }
 
             $search = Algolia::search()->listIndexes();
             if ($search->status() === 403 && str_contains((string) $search->json('message'), 'Invalid Application-ID or API key')) {
-                $this->flag("ALGOLIA_SEARCH_KEY in .env.testbed was rejected by Algolia ({$search->json('message')}).");
+                $this->flag("ALGOLIA_SEARCH_KEY in .env.site-check was rejected by Algolia ({$search->json('message')}).");
             }
 
             Algolia::admin()->deleteIndex($index);

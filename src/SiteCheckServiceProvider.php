@@ -1,16 +1,16 @@
 <?php
 
-namespace Frame\Testbed;
+namespace Frame\SiteCheck;
 
 use Illuminate\Support\ServiceProvider;
 
-class TestbedServiceProvider extends ServiceProvider
+class SiteCheckServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        if (is_file(base_path(Settings::FILE)) && $this->app->environment('testbed')) {
-            // Site seeders read their accounts and options from config('testbed').
-            $this->app['config']->set('testbed', Settings::load(base_path())->all());
+        if (is_file(base_path(Settings::FILE)) && $this->app->environment('site-check')) {
+            // Site seeders read their accounts and options from config('site-check').
+            $this->app['config']->set('site-check',Settings::load(base_path())->all());
         }
     }
 

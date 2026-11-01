@@ -1,4 +1,4 @@
-// Crawls the testbed site once per account (front end or control panel), then writes one HTML report:
+// Crawls the site-check site once per account (front end or control panel), then writes one HTML report:
 // problem pages first, a screenshot of every page, unreached routes and seeded-data gaps.
 //
 //   node crawl.js <config.json>
@@ -191,7 +191,7 @@ const section = (title, items, empty) =>
 
 const html = `<!doctype html>
 <meta charset="utf-8">
-<title>Testbed report</title>
+<title>Site check report</title>
 <style>
     body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; color: #1a1a1a; background: #fff; }
     section { margin-bottom: 24px; }
@@ -203,7 +203,7 @@ const html = `<!doctype html>
     ul { margin: 0; padding-left: 18px; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
     .meta { color: #666; }
 </style>
-<h1>Testbed report</h1>
+<h1>Site check report</h1>
 <p>${results.length} pages crawled, <strong>${broken.length} with problems</strong>. ${new Date().toLocaleString('en-AU')}</p>
 ${section('Routes no page reached', unreached, 'Every GET route was reached.')}
 ${section('Tables with no seeded rows', freshness.emptyTables, 'None.')}

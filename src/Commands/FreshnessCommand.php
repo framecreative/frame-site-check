@@ -1,13 +1,13 @@
 <?php
 
-namespace Frame\Testbed\Commands;
+namespace Frame\SiteCheck\Commands;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-class FreshnessCommand extends TestbedCommand
+class FreshnessCommand extends SiteCheckCommand
 {
-    protected $signature = 'testbed:freshness {--json= : Write the findings to this file}';
+    protected $signature = 'site-check:freshness {--json= : Write the findings to this file}';
 
     protected $description = 'Report gaps in the seeded data, and fail if any non-test email address exists';
 

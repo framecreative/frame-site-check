@@ -2,15 +2,15 @@
 <?php
 
 /*
- * Runs the testbed for the site in the current directory.
+ * Runs the site check for the site in the current directory.
  *
- *   testbed run              full run: compare, build, purge, seed, prepare, crawl, report
- *   testbed compare [base]   list package changes against the baseline branch (default: live)
- *   testbed shell            open a shell in the app container
- *   testbed down    stop and remove the containers and their volumes
+ *   site-check run              full run: compare, build, purge, seed, prepare, crawl, report
+ *   site-check compare [base]   list package changes against the baseline branch (default: live)
+ *   site-check shell            open a shell in the app container
+ *   site-check down    stop and remove the containers and their volumes
  *
- * Nothing here reads the site's .env files: the app container gets testbed.yaml's env values
- * plus .env.testbed, and nothing else.
+ * Nothing here reads the site's .env files: the app container gets site-check.yaml's env values
+ * plus .env.site-check, and nothing else.
  */
 
 $site = getcwd();
@@ -23,11 +23,11 @@ if (! is_file($site.'/vendor/autoload.php')) {
 
 require $site.'/vendor/autoload.php';
 
-if (! class_exists(Frame\Testbed\Settings::class)) {
+if (! class_exists(Frame\SiteCheck\Settings::class)) {
     require_once $package.'/src/Settings.php';
 }
 
-use Frame\Testbed\Settings;
+use Frame\SiteCheck\Settings;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Yaml\Yaml;
 
@@ -41,8 +41,8 @@ try {
 }
 
 $name = preg_replace('/[^a-z0-9-]/', '-', strtolower($settings->get('name', basename($site))));
-$project = "testbed-{$name}";
-$work = $site.'/.testbed';
+$project = "site-check-{$name}";
+$work = $site.'/.site-check';
 @mkdir($work, 0777, true);
 
 $composeFile = $work.'/compose.yaml';
@@ -71,7 +71,7 @@ switch ($command) {
         exit(1);
 }
 
-foreach (['.env.testbed' => 'Copy .env.testbed.example to .env.testbed and add the test Algolia keys.',
+foreach (['.env.site-check' => 'Copy .env.site-check.example to .env.site-check and add the test Algolia keys.',
              'database/schema/mysql-schema.sql' => 'Flatten the migrations with `php artisan schema:dump --prune`.'] as $file => $hint) {
     if (! is_file("{$site}/{$file}")) {
         fail("{$file} is missing. {$hint}");
@@ -89,14 +89,14 @@ $keep = implode(' ', array_map('escapeshellarg', $settings->get('statamic.keep',
 writeBootEntries($work, $settings->get('statamic.boot_entries', []));
 
 step('Starting containers', $compose(['up', '-d', '--build', '--wait', 'mysql', 'redis', 'app']));
-step('Copying the site into the container', $app("testbed-sync {$keep}"));
+step('Copying the site into the container', $app("site-check-sync {$keep}"));
 step('Installing Composer dependencies', $app('composer install --no-interaction --prefer-dist --no-progress'));
 step('Installing Node dependencies', $app('pnpm install --frozen-lockfile'));
-step('Preflight', $app('php artisan testbed:preflight'));
-step('Resetting the database', $app('php artisan testbed:reset'));
-step('Seeding', $app('php artisan testbed:seed'));
-step('Checking seeded data', $app('php artisan testbed:freshness --json=storage/testbed-freshness.json'));
-step('Resetting Algolia', $app('php artisan testbed:algolia-reset'));
+step('Preflight', $app('php artisan site-check:preflight'));
+step('Resetting the database', $app('php artisan site-check:reset'));
+step('Seeding', $app('php artisan site-check:seed'));
+step('Checking seeded data', $app('php artisan site-check:freshness --json=storage/site-check-freshness.json'));
+step('Resetting Algolia', $app('php artisan site-check:algolia-reset'));
 
 $prepare = array_merge(
     ['php artisan storage:link', 'php artisan statamic:stache:warm'],
@@ -116,7 +116,7 @@ step('Waiting for the site', $app('for i in $(seq 1 60); do curl -s -o /dev/null
 
 $routes = capture($app('php artisan route:list --json --method=GET'));
 file_put_contents("{$work}/routes.json", $routes);
-file_put_contents("{$work}/freshness.json", capture($app('cat storage/testbed-freshness.json')));
+file_put_contents("{$work}/freshness.json", capture($app('cat storage/site-check-freshness.json')));
 
 file_put_contents("{$work}/crawl-config.json", json_encode([
     'baseUrl' => 'http://app:8000',
@@ -138,7 +138,7 @@ exit($crawl);
 
 /**
  * Lists every package whose locked version differs between the baseline branch and the working tree,
- * so a run is judged against what actually changed. Writes .testbed/changes.json.
+ * so a run is judged against what actually changed. Writes .site-check/changes.json.
  */
 function compare(string $site, string $work, string $base): void
 {
@@ -214,7 +214,7 @@ function composerVersions(?string $lock): array
     $versions = [];
 
     foreach (array_merge($data['packages'] ?? [], $data['packages-dev'] ?? []) as $package) {
-        if ($package['name'] === 'framecreative/testbed') {
+        if ($package['name'] === 'framecreative/frame-site-check') {
             continue;
         }
         $versions[$package['name']] = [
@@ -328,14 +328,14 @@ function writeRuntime(string $site, string $package, string $work, string $proje
             'mysql' => [
                 'image' => 'mysql:8.4',
                 'environment' => [
-                    'MYSQL_DATABASE' => 'testbed',
-                    'MYSQL_USER' => 'testbed',
-                    'MYSQL_PASSWORD' => 'testbed',
-                    'MYSQL_ROOT_PASSWORD' => 'testbed',
+                    'MYSQL_DATABASE' => 'site_check',
+                    'MYSQL_USER' => 'site_check',
+                    'MYSQL_PASSWORD' => 'site_check',
+                    'MYSQL_ROOT_PASSWORD' => 'site_check',
                 ],
                 'tmpfs' => ['/var/lib/mysql'],
                 'healthcheck' => [
-                    'test' => ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-ptestbed'],
+                    'test' => ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-psite_check'],
                     'interval' => '3s',
                     'timeout' => '3s',
                     'retries' => 60,
@@ -356,7 +356,7 @@ function writeRuntime(string $site, string $package, string $work, string $proje
                 'env_file' => ["{$work}/runtime.env"],
                 'volumes' => [
                     "{$site}:/src:ro",
-                    "{$package}:/frame-testbed:ro",
+                    "{$package}:/frame-site-check:ro",
                     'vendor:/app/vendor',
                     'node-modules:/app/node_modules',
                     'pnpm-store:/pnpm-store',
@@ -407,13 +407,13 @@ function writeBootEntries(string $work, array $entries): void
 
     foreach ($entries as $index => $entry) {
         $collection = $entry['collection'];
-        $slug = $entry['slug'] ?? 'testbed-boot-'.$index;
-        $id = "testbed-boot-{$collection}-{$index}";
+        $slug = $entry['slug'] ?? 'site-check-boot-'.$index;
+        $id = "site-check-boot-{$collection}-{$index}";
 
         $frontMatter = array_filter([
             'id' => $id,
             'blueprint' => $entry['blueprint'] ?? null,
-            'title' => $entry['title'] ?? 'Testbed '.$slug,
+            'title' => $entry['title'] ?? 'Site check '.$slug,
         ]);
 
         @mkdir("{$stubs}/collections/{$collection}", 0777, true);

@@ -1,5 +1,5 @@
 {
-  "name": "testbed-crawler",
+  "name": "site-check-crawler",
   "private": true,
   "type": "module",
   "dependencies": {

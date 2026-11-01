@@ -1,13 +1,13 @@
 <?php
 
-namespace Frame\Testbed\Commands;
+namespace Frame\SiteCheck\Commands;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 
-class ResetCommand extends TestbedCommand
+class ResetCommand extends SiteCheckCommand
 {
-    protected $signature = 'testbed:reset';
+    protected $signature = 'site-check:reset';
 
     protected $description = 'Empty the database and Redis, then rebuild the schema from the dump';
 

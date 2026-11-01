@@ -1,5 +1,5 @@
 {
-    "name": "framecreative/testbed",
+    "name": "framecreative/frame-site-check",
     "description": "Containerised smoke testing for Frame Laravel/Statamic sites, against generated test data.",
     "type": "library",
     "license": "proprietary",
@@ -14,16 +14,16 @@
     },
     "autoload": {
         "psr-4": {
-            "Frame\\Testbed\\": "src/"
+            "Frame\\SiteCheck\\": "src/"
         }
     },
     "bin": [
-        "bin/testbed"
+        "bin/site-check"
     ],
     "extra": {
         "laravel": {
             "providers": [
-                "Frame\\Testbed\\TestbedServiceProvider"
+                "Frame\\SiteCheck\\SiteCheckServiceProvider"
             ]
         }
     }

@@ -1,13 +1,13 @@
 <?php
 
-namespace Frame\Testbed\Commands;
+namespace Frame\SiteCheck\Commands;
 
-use Frame\Testbed\Statamic\ContentSeeder;
-use Frame\Testbed\Statamic\RunwaySeeder;
+use Frame\SiteCheck\Statamic\ContentSeeder;
+use Frame\SiteCheck\Statamic\RunwaySeeder;
 
-class SeedCommand extends TestbedCommand
+class SeedCommand extends SiteCheckCommand
 {
-    protected $signature = 'testbed:seed';
+    protected $signature = 'site-check:seed';
 
     protected $description = 'Seed Runway models and Statamic content from blueprints, then run the site seeders and create accounts';
 
@@ -66,7 +66,7 @@ class SeedCommand extends TestbedCommand
                 ->email($account['email'])
                 ->password($account['password'])
                 ->makeSuper()
-                ->set('name', $account['name'] ?? 'Testbed '.$account['key'])
+                ->set('name', $account['name'] ?? 'Site check '.$account['key'])
                 ->save();
 
             $this->line("Control panel account {$account['email']} created.");

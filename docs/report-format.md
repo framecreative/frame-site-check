@@ -1,11 +1,11 @@
-# Testbed findings report format
+# Site check findings report format
 
-Every testbed run produces two things:
+Every site check run produces two things:
 
-- **The crawl report** (`.testbed/reports/<run>/index.html`, plus `results.json`, `changes.json`, `laravel.log`
+- **The crawl report** (`.site-check/reports/<run>/index.html`, plus `results.json`, `changes.json`, `laravel.log`
   and screenshots).
   Raw evidence, generated automatically. Not the deliverable.
-- **The findings report** (`.testbed/reports/<run>/findings.md`). The deliverable: what the run found,
+- **The findings report** (`.site-check/reports/<run>/findings.md`). The deliverable: what the run found,
   classified and de-duplicated, written so someone who hasn't followed the work can act on it.
   It always follows this format.
 
@@ -14,7 +14,7 @@ Every testbed run produces two things:
 - **One finding per root cause.** The same error on many pages or accounts is one finding; list where it occurs.
 - **Never mark a finding Confirmed without evidence in the code** (a `file:line` or the exact config) or a
   reproduction. Anything else is "Needs investigation".
-- **Classify every finding** (below). Seeding gaps are testbed problems, not site problems; keep them separate.
+- **Classify every finding** (below). Seeding gaps are site check problems, not site problems; keep them separate.
 - **Say what to do**, not just what happened.
 - Short, literal sentences. Australian English.
 
@@ -25,8 +25,8 @@ Every testbed run produces two things:
 | Site bug | Wrong behaviour in the site's own code or config that real users or editors can hit. |
 | Upgrade regression | A site bug introduced by the dependency changes being tested (the maintenance diff against `live`). |
 | Vendor | A problem inside a third-party package (Statamic, Runway, an addon). Report upstream or ignore. |
-| Seeding gap | The test data doesn't look like real data, so the page fails in a way real content wouldn't. Fixed in the testbed, not the site. |
-| Environment | Caused by the container setup, not the site. Fixed in the testbed. |
+| Seeding gap | The test data doesn't look like real data, so the page fails in a way real content wouldn't. Fixed in the site check, not the site. |
+| Environment | Caused by the container setup, not the site. Fixed in the site check. |
 
 ## Status
 
@@ -47,7 +47,7 @@ Every testbed run produces two things:
 ## Template
 
 ```markdown
-# Testbed findings: <site>, <date>
+# Site check findings: <site>, <date>
 
 ## Run
 - Branch / commit: <branch> @ <short hash> (<"clean" or "with uncommitted changes">)
@@ -83,12 +83,12 @@ Every testbed run produces two things:
 - Routes not reached that matter: <list, with why (no seeded data, behind a form, iframe…)>
 - Seeding gaps: <fieldtypes with no generator, tables left empty that pages depend on>
 
-## Testbed issues
+## Site check issues
 <Problems running the tests, not site problems. Per issue: the step, the exact error, what was tried, the
 suspected cause. "None" if none.>
 
-## Testbed changes made during this run
-<Fixes to the shared testbed or the site's testbed.yaml/seeders, so the next run is comparable. "None" if none.>
+## Site check changes made during this run
+<Fixes to the shared site check or the site's site-check.yaml/seeders, so the next run is comparable. "None" if none.>
 ```
 
 IDs are the site prefix and a number (`L1`, `F3`) and stay stable across runs of the same piece of work.

@@ -1,26 +1,26 @@
 <?php
 
-namespace Frame\Testbed;
+namespace Frame\SiteCheck;
 
 use Illuminate\Support\Arr;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The site's testbed.yaml, with the shared defaults applied.
+ * The site's site-check.yaml, with the shared defaults applied.
  */
 class Settings
 {
-    public const FILE = 'testbed.yaml';
+    public const FILE = 'site-check.yaml';
 
-    /** Env values every run enforces; a site's testbed.yaml can't override these. */
+    /** Env values every run enforces; a site's site-check.yaml can't override these. */
     public const PROTECTED_ENV = [
-        'APP_ENV' => 'testbed',
+        'APP_ENV' => 'site-check',
         'DB_CONNECTION' => 'mysql',
         'DB_HOST' => 'mysql',
         'DB_PORT' => '3306',
-        'DB_DATABASE' => 'testbed',
-        'DB_USERNAME' => 'testbed',
-        'DB_PASSWORD' => 'testbed',
+        'DB_DATABASE' => 'site_check',
+        'DB_USERNAME' => 'site_check',
+        'DB_PASSWORD' => 'site_check',
         'REDIS_HOST' => 'redis',
         'REDIS_PORT' => '6379',
         'REDIS_PASSWORD' => '',
@@ -31,7 +31,7 @@ class Settings
         'BROADCAST_CONNECTION' => 'log',
     ];
 
-    /** Env values every run starts with; a site's testbed.yaml can override these. */
+    /** Env values every run starts with; a site's site-check.yaml can override these. */
     public const DEFAULT_ENV = [
         'APP_DEBUG' => 'true',
         'APP_URL' => 'http://app:8000',

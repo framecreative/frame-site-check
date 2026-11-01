@@ -16,8 +16,8 @@ RUN apt-get update \
     && npm install -g pnpm@11 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY sync.sh /usr/local/bin/testbed-sync
-RUN chmod +x /usr/local/bin/testbed-sync
+COPY sync.sh /usr/local/bin/site-check-sync
+RUN chmod +x /usr/local/bin/site-check-sync
 
 ENV COMPOSER_ALLOW_SUPERUSER=1 \
     npm_config_store_dir=/pnpm-store \
