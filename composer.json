@@ -1,10 +1,11 @@
 {
     "name": "framecreative/frame-site-check",
     "description": "Containerised smoke testing for Frame Laravel/Statamic sites, against generated test data.",
-    "type": "library",
+    "type": "composer-plugin",
     "license": "proprietary",
     "require": {
         "php": "^8.3",
+        "composer-plugin-api": "^2.0",
         "illuminate/support": "^12.0|^13.0",
         "symfony/process": "^7.0|^8.0",
         "symfony/yaml": "^7.0|^8.0"
@@ -21,6 +22,7 @@
         "bin/site-check"
     ],
     "extra": {
+        "class": "Frame\\SiteCheck\\Composer\\SkillLinker",
         "laravel": {
             "providers": [
                 "Frame\\SiteCheck\\SiteCheckServiceProvider"
