@@ -1,0 +1,13 @@
+{
+  "name": "frame-testbed",
+  "owner": {
+    "name": "Frame"
+  },
+  "plugins": [
+    {
+      "name": "testbed",
+      "source": "./",
+      "description": "Test a site's dependency updates in a seeded container: compare against live, read changelogs, run the testbed, report findings."
+    }
+  ]
+}

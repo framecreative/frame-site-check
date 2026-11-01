@@ -1,0 +1,8 @@
+{
+  "name": "testbed",
+  "version": "0.1.0",
+  "description": "Test a site's dependency updates in a seeded container: compare against live, read changelogs, run the testbed, report findings.",
+  "author": {
+    "name": "Frame"
+  }
+}

@@ -1,0 +1,30 @@
+{
+    "name": "framecreative/testbed",
+    "description": "Containerised smoke testing for Frame Laravel/Statamic sites, against generated test data.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.3",
+        "illuminate/support": "^12.0|^13.0",
+        "symfony/process": "^7.0|^8.0",
+        "symfony/yaml": "^7.0|^8.0"
+    },
+    "suggest": {
+        "statamic/cms": "Enables the Statamic content and control panel account seeding"
+    },
+    "autoload": {
+        "psr-4": {
+            "Frame\\Testbed\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/testbed"
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Frame\\Testbed\\TestbedServiceProvider"
+            ]
+        }
+    }
+}

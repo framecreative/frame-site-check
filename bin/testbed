@@ -1,0 +1,462 @@
+#!/usr/bin/env php
+<?php
+
+/*
+ * Runs the testbed for the site in the current directory.
+ *
+ *   testbed run              full run: compare, build, purge, seed, prepare, crawl, report
+ *   testbed compare [base]   list package changes against the baseline branch (default: live)
+ *   testbed shell            open a shell in the app container
+ *   testbed down    stop and remove the containers and their volumes
+ *
+ * Nothing here reads the site's .env files: the app container gets testbed.yaml's env values
+ * plus .env.testbed, and nothing else.
+ */
+
+$site = getcwd();
+$package = dirname(__DIR__);
+
+if (! is_file($site.'/vendor/autoload.php')) {
+    fwrite(STDERR, "Run this from a site root with its Composer dependencies installed.\n");
+    exit(1);
+}
+
+require $site.'/vendor/autoload.php';
+
+if (! class_exists(Frame\Testbed\Settings::class)) {
+    require_once $package.'/src/Settings.php';
+}
+
+use Frame\Testbed\Settings;
+use Symfony\Component\Process\Process;
+use Symfony\Component\Yaml\Yaml;
+
+$command = $argv[1] ?? 'run';
+
+try {
+    $settings = Settings::load($site);
+} catch (RuntimeException $e) {
+    fwrite(STDERR, $e->getMessage()."\n");
+    exit(1);
+}
+
+$name = preg_replace('/[^a-z0-9-]/', '-', strtolower($settings->get('name', basename($site))));
+$project = "testbed-{$name}";
+$work = $site.'/.testbed';
+@mkdir($work, 0777, true);
+
+$composeFile = $work.'/compose.yaml';
+writeRuntime($site, $package, $work, $project, $settings);
+
+$compose = fn (array $args) => array_merge(['docker', 'compose', '-p', $project, '-f', $composeFile], $args);
+$app = fn (string $script) => $compose(['exec', '-T', 'app', 'bash', '-lc', $script]);
+
+switch ($command) {
+    case 'shell':
+        passthru(implode(' ', array_map('escapeshellarg', $compose(['exec', 'app', 'bash']))), $code);
+        exit($code);
+
+    case 'down':
+        exit(run($compose(['down', '--volumes', '--remove-orphans'])));
+
+    case 'compare':
+        compare($site, $work, $argv[2] ?? $settings->get('baseline', 'live'));
+        exit(0);
+
+    case 'run':
+        break;
+
+    default:
+        fwrite(STDERR, "Unknown command \"{$command}\". Use run, compare, shell or down.\n");
+        exit(1);
+}
+
+foreach (['.env.testbed' => 'Copy .env.testbed.example to .env.testbed and add the test Algolia keys.',
+             'database/schema/mysql-schema.sql' => 'Flatten the migrations with `php artisan schema:dump --prune`.'] as $file => $hint) {
+    if (! is_file("{$site}/{$file}")) {
+        fail("{$file} is missing. {$hint}");
+    }
+}
+
+$stamp = date('Y-m-d-His');
+$reportDir = "{$work}/reports/{$stamp}";
+@mkdir($reportDir, 0777, true);
+
+compare($site, $work, $settings->get('baseline', 'live'));
+copy("{$work}/changes.json", "{$reportDir}/changes.json");
+
+$keep = implode(' ', array_map('escapeshellarg', $settings->get('statamic.keep', [])));
+writeBootEntries($work, $settings->get('statamic.boot_entries', []));
+
+step('Starting containers', $compose(['up', '-d', '--build', '--wait', 'mysql', 'redis', 'app']));
+step('Copying the site into the container', $app("testbed-sync {$keep}"));
+step('Installing Composer dependencies', $app('composer install --no-interaction --prefer-dist --no-progress'));
+step('Installing Node dependencies', $app('pnpm install --frozen-lockfile'));
+step('Preflight', $app('php artisan testbed:preflight'));
+step('Resetting the database', $app('php artisan testbed:reset'));
+step('Seeding', $app('php artisan testbed:seed'));
+step('Checking seeded data', $app('php artisan testbed:freshness --json=storage/testbed-freshness.json'));
+step('Resetting Algolia', $app('php artisan testbed:algolia-reset'));
+
+$prepare = array_merge(
+    ['php artisan storage:link', 'php artisan statamic:stache:warm'],
+    array_map(fn ($cmd) => "php artisan {$cmd}", $settings->get('prepare', [])),
+    $settings->get('build', ['pnpm run build']),
+);
+foreach ($prepare as $cmd) {
+    step("Preparing: {$cmd}", $app($cmd));
+}
+
+run($app('pkill -f "artisan serve" ; pkill -f "inertia:start-ssr" ; pkill -f "bootstrap/ssr" ; true'));
+run($compose(['exec', '-d', 'app', 'bash', '-lc', 'php artisan serve --host=0.0.0.0 --port=8000 --no-reload > storage/logs/serve.log 2>&1']));
+if ($settings->get('ssr', false)) {
+    run($compose(['exec', '-d', 'app', 'bash', '-lc', 'php artisan inertia:start-ssr > storage/logs/ssr.log 2>&1']));
+}
+step('Waiting for the site', $app('for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8000 && exit 0; sleep 1; done; exit 1'));
+
+$routes = capture($app('php artisan route:list --json --method=GET'));
+file_put_contents("{$work}/routes.json", $routes);
+file_put_contents("{$work}/freshness.json", capture($app('cat storage/testbed-freshness.json')));
+
+file_put_contents("{$work}/crawl-config.json", json_encode([
+    'baseUrl' => 'http://app:8000',
+    'outDir' => "/out/reports/{$stamp}",
+    'accounts' => array_values(array_filter($settings->accounts(), fn ($a) => $a['crawl'] ?? true)),
+    'crawl' => $settings->get('crawl', []),
+    'routes' => '/out/routes.json',
+    'freshness' => '/out/freshness.json',
+], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+$crawl = run($compose(['run', '--rm', 'crawler']));
+
+file_put_contents("{$reportDir}/laravel.log", capture($app('cat storage/logs/laravel.log 2>/dev/null')));
+
+echo "\nReport: {$reportDir}/index.html\n";
+exit($crawl);
+
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Lists every package whose locked version differs between the baseline branch and the working tree,
+ * so a run is judged against what actually changed. Writes .testbed/changes.json.
+ */
+function compare(string $site, string $work, string $base): void
+{
+    $ref = null;
+    foreach (["origin/{$base}", $base] as $candidate) {
+        if (trim(capture(['git', '-C', $site, 'rev-parse', '--verify', '--quiet', $candidate])) !== '') {
+            $ref = $candidate;
+            break;
+        }
+    }
+    if ($ref === null) {
+        fail("Baseline branch \"{$base}\" not found. Fetch it with `git fetch origin {$base}`.");
+    }
+
+    $baseline = fn (string $file) => gitShow($site, $ref, $file);
+    $current = fn (string $file) => is_file("{$site}/{$file}") ? file_get_contents("{$site}/{$file}") : null;
+
+    $direct = array_unique(array_merge(
+        composerRequires($baseline('composer.json')),
+        composerRequires($current('composer.json')),
+    ));
+    $nodeLock = is_file("{$site}/pnpm-lock.yaml") ? 'pnpm-lock.yaml' : 'package-lock.json';
+
+    $changes = [
+        'baseline' => $ref,
+        'baseline_commit' => trim(capture(['git', '-C', $site, 'rev-parse', '--short', $ref])),
+        'branch' => trim(capture(['git', '-C', $site, 'rev-parse', '--abbrev-ref', 'HEAD'])),
+        'commit' => trim(capture(['git', '-C', $site, 'rev-parse', '--short', 'HEAD'])),
+        'uncommitted_lock_changes' => trim(capture(['git', '-C', $site, 'status', '--porcelain', '--', 'composer.lock', $nodeLock])) !== '',
+        'composer' => diffVersions(
+            composerVersions($baseline('composer.lock')),
+            composerVersions($current('composer.lock')),
+            fn ($name) => in_array($name, $direct, true),
+        ),
+        'node' => diffVersions(
+            nodeVersions($baseline($nodeLock)),
+            nodeVersions($current($nodeLock)),
+            fn () => true,
+        ),
+    ];
+
+    file_put_contents("{$work}/changes.json", json_encode($changes, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+    echo "\n\033[1m▸ Changes: {$changes['branch']} @ {$changes['commit']} against {$ref} @ {$changes['baseline_commit']}\033[0m\n";
+    foreach (['composer', 'node'] as $type) {
+        $listed = array_filter($changes[$type], fn ($c) => $c['direct']);
+        printf("%s: %d changed (%d direct)\n", $type, count($changes[$type]), count($listed));
+        foreach ($listed as $c) {
+            printf("  %-45s %-12s → %-12s %s\n", $c['package'], $c['from'] ?? '-', $c['to'] ?? '-', $c['change']);
+        }
+    }
+    echo "Written to {$work}/changes.json\n";
+}
+
+function gitShow(string $site, string $ref, string $file): ?string
+{
+    $process = new Process(['git', '-C', $site, 'show', "{$ref}:{$file}"]);
+    $process->run();
+
+    return $process->isSuccessful() ? $process->getOutput() : null;
+}
+
+function composerRequires(?string $json): array
+{
+    $data = json_decode($json ?? '{}', true) ?: [];
+
+    return array_keys(array_merge($data['require'] ?? [], $data['require-dev'] ?? []));
+}
+
+function composerVersions(?string $lock): array
+{
+    $data = json_decode($lock ?? '{}', true) ?: [];
+    $versions = [];
+
+    foreach (array_merge($data['packages'] ?? [], $data['packages-dev'] ?? []) as $package) {
+        if ($package['name'] === 'framecreative/testbed') {
+            continue;
+        }
+        $versions[$package['name']] = [
+            'version' => ltrim($package['version'], 'v'),
+            'source' => preg_replace('/\.git$/', '', $package['source']['url'] ?? ''),
+        ];
+    }
+
+    return $versions;
+}
+
+/**
+ * Direct dependencies only, from pnpm-lock.yaml (any version) or package-lock.json.
+ */
+function nodeVersions(?string $lock): array
+{
+    if ($lock === null) {
+        return [];
+    }
+
+    $versions = [];
+    $add = function ($name, $version) use (&$versions) {
+        $versions[$name] = [
+            'version' => preg_replace('/\(.*$/', '', (string) $version),
+            'source' => "https://www.npmjs.com/package/{$name}",
+        ];
+    };
+
+    if (str_starts_with(ltrim($lock), '{')) {
+        $data = json_decode($lock, true) ?: [];
+        $root = $data['packages'][''] ?? [];
+        foreach (array_keys(array_merge($root['dependencies'] ?? [], $root['devDependencies'] ?? [])) as $name) {
+            $add($name, $data['packages']["node_modules/{$name}"]['version'] ?? '');
+        }
+
+        return $versions;
+    }
+
+    $data = Yaml::parse($lock);
+    $importer = $data['importers']['.'] ?? $data;
+    foreach (['dependencies', 'devDependencies', 'optionalDependencies'] as $group) {
+        foreach ($importer[$group] ?? [] as $name => $dependency) {
+            $add($name, is_array($dependency) ? $dependency['version'] : $dependency);
+        }
+    }
+
+    return $versions;
+}
+
+function diffVersions(array $old, array $new, callable $isDirect): array
+{
+    $changes = [];
+
+    foreach (array_unique(array_merge(array_keys($old), array_keys($new))) as $name) {
+        $from = $old[$name]['version'] ?? null;
+        $to = $new[$name]['version'] ?? null;
+        if ($from === $to) {
+            continue;
+        }
+        $changes[] = [
+            'package' => $name,
+            'from' => $from,
+            'to' => $to,
+            'change' => bump($from, $to),
+            'direct' => $isDirect($name),
+            'source' => ($new[$name] ?? $old[$name])['source'],
+        ];
+    }
+
+    $rank = ['major' => 0, 'added' => 1, 'removed' => 2, 'minor' => 3, 'patch' => 4, 'other' => 5];
+    usort($changes, fn ($a, $b) => [! $a['direct'], $rank[$a['change']], $a['package']] <=> [! $b['direct'], $rank[$b['change']], $b['package']]);
+
+    return $changes;
+}
+
+/**
+ * A 0.x minor bump counts as major, as semver allows breaking changes there.
+ */
+function bump(?string $from, ?string $to): string
+{
+    if ($from === null) {
+        return 'added';
+    }
+    if ($to === null) {
+        return 'removed';
+    }
+    if (! preg_match('/^(\d+)\.(\d+)/', $from, $a) || ! preg_match('/^(\d+)\.(\d+)/', $to, $b)) {
+        return 'other';
+    }
+    if ($a[1] !== $b[1] || ($a[1] === '0' && $a[2] !== $b[2])) {
+        return 'major';
+    }
+
+    return $a[2] !== $b[2] ? 'minor' : 'patch';
+}
+
+function writeRuntime(string $site, string $package, string $work, string $project, Settings $settings): void
+{
+    $env = $settings->env();
+    $env['APP_KEY'] = 'base64:'.base64_encode(random_bytes(32));
+
+    file_put_contents("{$work}/runtime.env", implode("\n", array_map(
+        fn ($key, $value) => $key.'='.$value,
+        array_keys($env),
+        $env,
+    ))."\n");
+
+    $compose = [
+        'name' => $project,
+        'services' => [
+            'mysql' => [
+                'image' => 'mysql:8.4',
+                'environment' => [
+                    'MYSQL_DATABASE' => 'testbed',
+                    'MYSQL_USER' => 'testbed',
+                    'MYSQL_PASSWORD' => 'testbed',
+                    'MYSQL_ROOT_PASSWORD' => 'testbed',
+                ],
+                'tmpfs' => ['/var/lib/mysql'],
+                'healthcheck' => [
+                    'test' => ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-ptestbed'],
+                    'interval' => '3s',
+                    'timeout' => '3s',
+                    'retries' => 60,
+                ],
+            ],
+            'redis' => [
+                'image' => 'redis:7.4-alpine',
+            ],
+            'app' => [
+                'build' => [
+                    'context' => "{$package}/docker",
+                    'args' => [
+                        'PHP_VERSION' => (string) $settings->get('php', '8.3'),
+                        'NODE_VERSION' => (string) $settings->get('node', '22'),
+                    ],
+                ],
+                'command' => ['sleep', 'infinity'],
+                'env_file' => ["{$work}/runtime.env"],
+                'volumes' => [
+                    "{$site}:/src:ro",
+                    "{$package}:/frame-testbed:ro",
+                    'vendor:/app/vendor',
+                    'node-modules:/app/node_modules',
+                    'pnpm-store:/pnpm-store',
+                    'composer-cache:/root/.composer/cache',
+                ],
+                'extra_hosts' => array_map(fn ($host) => "{$host}:0.0.0.0", $settings->blockedHosts()),
+                'depends_on' => [
+                    'mysql' => ['condition' => 'service_healthy'],
+                    'redis' => ['condition' => 'service_started'],
+                ],
+            ],
+            'crawler' => [
+                'image' => 'mcr.microsoft.com/playwright:v1.56.1-noble',
+                'profiles' => ['crawl'],
+                'working_dir' => '/crawler',
+                'command' => ['bash', '-lc', 'npm install --no-audit --no-fund --silent && node crawl.js /out/crawl-config.json'],
+                'volumes' => [
+                    "{$package}/crawler:/crawler",
+                    'crawler-modules:/crawler/node_modules',
+                    "{$work}:/out",
+                ],
+                'ipc' => 'host',
+                'depends_on' => ['app'],
+            ],
+        ],
+        'volumes' => [
+            'vendor' => null,
+            'node-modules' => null,
+            'pnpm-store' => null,
+            'composer-cache' => null,
+            'crawler-modules' => null,
+        ],
+    ];
+
+    file_put_contents("{$work}/compose.yaml", Yaml::dump($compose, 6, 2));
+}
+
+/**
+ * Minimal Statamic entries some sites need before they can boot at all (a root home page their routes look up).
+ * Written as plain files because the app can't run until they exist; root entries lead their collection's tree.
+ */
+function writeBootEntries(string $work, array $entries): void
+{
+    $stubs = "{$work}/stubs/content";
+    exec('rm -rf '.escapeshellarg("{$work}/stubs"));
+
+    $trees = [];
+
+    foreach ($entries as $index => $entry) {
+        $collection = $entry['collection'];
+        $slug = $entry['slug'] ?? 'testbed-boot-'.$index;
+        $id = "testbed-boot-{$collection}-{$index}";
+
+        $frontMatter = array_filter([
+            'id' => $id,
+            'blueprint' => $entry['blueprint'] ?? null,
+            'title' => $entry['title'] ?? 'Testbed '.$slug,
+        ]);
+
+        @mkdir("{$stubs}/collections/{$collection}", 0777, true);
+        file_put_contents("{$stubs}/collections/{$collection}/{$slug}.md", "---\n".Yaml::dump($frontMatter)."---\n");
+
+        if (! empty($entry['root'])) {
+            $trees[$collection][] = ['entry' => $id];
+        }
+    }
+
+    foreach ($trees as $collection => $tree) {
+        @mkdir("{$stubs}/trees/collections", 0777, true);
+        file_put_contents("{$stubs}/trees/collections/{$collection}.yaml", Yaml::dump(['tree' => $tree]));
+    }
+}
+
+function step(string $label, array $command): void
+{
+    echo "\n\033[1m▸ {$label}\033[0m\n";
+
+    if (run($command) !== 0) {
+        fail("Step failed: {$label}");
+    }
+}
+
+function run(array $command): int
+{
+    $process = new Process($command, null, null, null, null);
+    $process->run(fn ($type, $output) => fwrite($type === Process::ERR ? STDERR : STDOUT, $output));
+
+    return $process->getExitCode();
+}
+
+function capture(array $command): string
+{
+    $process = new Process($command, null, null, null, 300);
+    $process->run();
+
+    return $process->getOutput();
+}
+
+function fail(string $message): never
+{
+    fwrite(STDERR, "\n\033[31m{$message}\033[0m\n");
+    exit(1);
+}
