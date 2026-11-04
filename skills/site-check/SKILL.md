@@ -61,8 +61,16 @@ Do every step. If the run fails (a "Step failed" line, or no crawl report), stop
    version differs from the baseline, with `change` (major, minor, patch, added, removed) and `direct`.
 2. **Read the changelogs** for every direct package with a major, minor, added or removed change.
    Split them across subagents on a cheaper model (`model: "sonnet"`), a handful of packages each.
-   Each returns, per package: breaking changes, behaviour changes and deprecations in the version range,
-   and where this site uses the package (grep the site code). Patch and transitive changes are listed
+   Each returns, per package, every breaking change, behaviour change and deprecation in the version range, and
+   for each one whether this site's code relies on that specific thing (the method, class, config key, event or
+   behaviour), not just whether it uses the package:
+   - **Applies:** the `file:line` that relies on it, and what will happen to that code.
+   - **Doesn't apply:** one line on why (not called, a different driver, behind a feature the site doesn't use).
+   - **Unsure:** what was checked and what's still open.
+
+   Settle every Unsure in the main session by reading the code until it's Applies or Doesn't apply. Only if the
+   answer depends on something outside the code (production data, server config) does it stay open; then report
+   it as a Changelog flag that names exactly what would settle it. Patch and transitive changes are listed
    in the report but not researched, unless a changelog flags a security fix or a known regression.
 3. **Map changes to areas.** From the subagent results, list the areas of the site each change could
    affect, as routes or pages (`php artisan route:list` on the host is fine). This is the list the run
@@ -74,11 +82,12 @@ Do every step. If the run fails (a "Step failed" line, or no crawl report), stop
    ```bash
    bash -c 'php vendor/framecreative/frame-site-check/bin/site-check run 2>&1 | tee .site-check/run.out \
      | perl -ne '\''$|=1; s/\e\[[0-9;]*m//g; print if /^\s*▸|Step failed|Report:|emails caught|Exception/'\''; \
-     echo "▸ Run finished (exit ${PIPESTATUS[0]})"'
+     echo "▸ Run finished (exit ${PIPESTATUS[0]})" | tee -a .site-check/run.out'
    ```
 
    Don't read the run's output while it runs; the monitor's lines are the progress. If the monitor expires before
-   "Run finished", re-arm it on `tail -f .site-check/run.out` with the same filter. Exit 1 at the end only means
+   "Run finished", re-arm it on `tail -f .site-check/run.out` with the same filter. `tail -f` doesn't end by itself:
+   stop that monitor (TaskStop) as soon as it shows "Run finished". Exit 1 at the end only means
    the crawl found problems; a failed step says "Step failed".
    It repeats the compare and copies `changes.json` into the report directory.
    The crawl report is at `.site-check/reports/<run>/index.html`, with `results.json` beside it.
@@ -93,13 +102,27 @@ Do every step. If the run fails (a "Step failed" line, or no crawl report), stop
    no queue worker runs.
 5. **Check coverage of the affected areas.** For each area from step 3, find it in `results.json`:
    reached and clean, reached with problems, or not reached (and why).
-6. **Investigate problems.** One finding per root cause. Classify per the report format. A problem in an
-   area a changed package touches is a candidate Upgrade regression; confirm it against the changelog
-   and the code before marking it so.
+6. **Investigate problems.** One finding per root cause. Give each a source and a classification per the
+   report format. A problem in an area a changed package touches is a candidate Upgrade regression; confirm it
+   against the changelog and the code before marking it so. Changes from step 2 that apply go under Changelog
+   flags, unless the run reached that code and it failed (then it's a Broken finding). Changes that don't apply
+   are only counted in the package's row.
 7. **Report.** Write `.site-check/reports/<run>/findings.md` in the report format, covering this run only
    (plus Resolved since last run when continuing). Publish it as an artifact, following the user's artifact
    instructions: a new artifact for a new report, the same one for a continued report. Add its link to the
    Artifact line in `findings.md`.
+
+## Fixing findings
+
+When the user fixes findings in this session (with you or by asking you), keep a list of what each fix needs on a
+server after deploy: migrations, `php artisan` cache, config, view or Stache clears, search re-imports, asset
+builds, Composer or pnpm installs, new env values. Check each fix for these: a new migration, a changed config file,
+a changed blueprint or fieldset, a new dependency, front-end changes.
+
+- End every reply that includes a fix with a **Commands to run after deploy** list: the commands so far, one per
+  line, each with the finding it's for. Say "None" if the fixes need none.
+- The next report (continued or new, within this session) carries the list under Commands to run after deploy until
+  the user says they've been run.
 
 ## When the run fails
 

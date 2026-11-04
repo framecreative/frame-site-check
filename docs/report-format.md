@@ -20,11 +20,26 @@ Every site check run produces two things:
 - **One finding per root cause.** The same error on many pages or accounts is one finding; list where it occurs.
 - **Never mark a finding Confirmed without evidence in the code** (a `file:line` or the exact config) or a
   reproduction. Anything else is "Needs investigation".
+- **Give every finding a source** (below), so a failure the run hit never reads the same as something read in a
+  changelog.
 - **Classify every finding** (below). Seeding gaps are site check problems, not site problems; keep them separate.
+- **Report a changelog change only if it applies to this site**: the site uses the changed method, config key or
+  behaviour, with the `file:line`. Changes the site doesn't use aren't reported, only counted.
 - **Say what to do**, not just what happened.
 - **Every error comes with where it happened:** the source file and line, or the failing URL. A bare message
   isn't evidence.
 - Short, literal sentences. Australian English.
+
+## Sources
+
+| Source | Meaning |
+| --- | --- |
+| Broken | The run hit it: an error, a failed save or create, a bad response, a broken email. |
+| Bug | Found by reading the code; the run didn't show it failing. |
+| Changelog | A dependency change the site's code relies on (Changelog flags). Nothing failed and nothing was contacted. |
+
+A changelog change in code the run covered and that failed is a Broken finding, not a flag; its evidence cites the
+changelog entry.
 
 ## Classifications
 
@@ -72,15 +87,16 @@ Every site check run produces two things:
 ## Changes under test
 - Composer: <n> changed (<n> direct; <n> major). Node: <n> changed (<n> direct; <n> major). From `changes.json`.
 
-| Package | From → To | What changed that matters | Areas affected | Crawl result |
+| Package | From → To | Changes that apply to the site | Areas affected | Crawl result |
 | --- | --- | --- | --- | --- |
-| <package> | <from> → <to> | <breaking or behaviour changes, or "nothing relevant"> | <routes or pages> | <Clean, Problems (finding IDs), or Not reached (why)> |
+| <package> | <from> → <to> | <the changes the site's code relies on, with flag or finding IDs; or "<n> changes checked, none used by the site"> | <routes or pages> | <Clean, Problems (finding IDs), or Not reached (why)> |
 
 <One row per researched package. Then one line listing the patch and transitive changes that weren't researched.>
 
 ## Findings
 
 ### <ID>. <Short title>
+- **Source:** <Broken | Bug>
 - **Classification:** <Site bug | Upgrade regression | Vendor | Seeding gap | Environment>
 - **Status:** <Confirmed | Needs investigation>
 - **Severity:** <High | Medium | Low>
@@ -88,6 +104,18 @@ Every site check run produces two things:
 - **Evidence:** <the exact error, the source file and line it was thrown from (from the mapped stack in
   results.json), the first relevant stack frames, and the code or config that causes it>
 - **Action:** <what to do, and where>
+
+## Changelog flags
+<Only dependency changes the site's code relies on that the run didn't show failing. None → "None: every change
+checked is unused by the site, or covered by the run.">
+
+### <ID>. <package> <version>: <what changed>
+- **Source:** Changelog
+- **Where the site relies on it:** <file:line, and what that code does>
+- **What will happen:** <the effect on that code after the update>
+- **Run coverage:** <not reached, and why (e.g. the integration is unconfigured in the container); or reached and
+  clean, and why that doesn't settle it>
+- **Action:** <the change to make, or how to check it before deploying>
 
 ## Coverage
 - Routes not reached that matter: <list, with why (no seeded data, behind a form, iframe…)>
@@ -98,6 +126,11 @@ Every site check run produces two things:
 ## Resolved since last run
 <Only when continuing a report. One line per finding from the previous run that this run no longer shows:
 ID, title, and what fixed it if known. Each is listed once; the next run drops it.>
+
+## Commands to run after deploy
+<Only when fixes made while working on this report need them: migrations, cache or Stache clears, search
+re-imports, asset builds, config to set on the server. One line each: the command, and the finding it's for.
+Carried over when continuing a report until the user says they've been run. None → leave the section out.>
 
 Artifact: <the published page's link, once published>
 ```
@@ -113,5 +146,9 @@ IDs are the site prefix and a number (`L1`, `F3`).
 
 ## Published report
 
-When the findings report is published as a page, the Resolved since last run entries are shown in green:
-`#2c7551` on a light background and `#6cc191` on a dark one.
+When the findings report is published as a page:
+
+- Resolved since last run entries are shown in green: `#2c7551` on a light background and `#6cc191` on a dark one.
+- Every finding card shows its source as a label (Broken, Bug, Changelog) beside its ID.
+- Changelog flags are cards with a neutral grey edge and no severity colour, so they don't read as failures.
+- Commands to run after deploy is one code block, ready to copy.
