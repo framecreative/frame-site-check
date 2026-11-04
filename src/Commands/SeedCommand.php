@@ -23,6 +23,9 @@ class SeedCommand extends SiteCheckCommand
             $this->line("Seeding with seed {$seed}.");
         }
 
+        // Failures are collected so one run shows them all; the command then fails so the run stops.
+        $failures = [];
+
         $statamic = class_exists(\Statamic\Statamic::class);
         $content = $statamic
             ? new ContentSeeder(array_merge($this->settings->get('statamic', []), ['values' => $this->settings->get('values', [])]))
@@ -36,18 +39,20 @@ class SeedCommand extends SiteCheckCommand
             $runway->run();
 
             foreach ($runway->errors as $error) {
-                $this->warn("Runway: {$error}");
+                $failures[] = "Runway: {$error}";
             }
         }
 
         // Site seeders run after the Runway models exist, so they can build on them (enrolments, teams, accounts…).
         foreach ($this->settings->get('seeders', []) as $seeder) {
             $this->info("Seeding {$seeder}");
-            $this->call('db:seed', ['--class' => $seeder, '--force' => true]);
+            if (($code = $this->call('db:seed', ['--class' => $seeder, '--force' => true])) !== self::SUCCESS) {
+                $failures[] = "{$seeder} exited with code {$code}";
+            }
         }
 
         if (! $content) {
-            return self::SUCCESS;
+            return $this->finish($failures);
         }
 
         $this->info('Seeding Statamic content from blueprints');
@@ -64,7 +69,21 @@ class SeedCommand extends SiteCheckCommand
             $this->line("{$count} control panel save and create targets written.");
         }
 
-        return self::SUCCESS;
+        return $this->finish($failures);
+    }
+
+    protected function finish(array $failures): int
+    {
+        if (! $failures) {
+            return self::SUCCESS;
+        }
+
+        $this->error('Seeding failed:');
+        foreach ($failures as $failure) {
+            $this->error("  {$failure}");
+        }
+
+        return self::FAILURE;
     }
 
     protected function seedControlPanelAccounts(): void

@@ -92,6 +92,9 @@ for (const account of config.accounts) {
     const scope = account.guard === 'cp' ? 'cp' : 'frontend';
     const form = login[scope];
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const accountStart = results.length;
+    // "▸" lines are the run's progress milestones; the skill's monitor passes only those on.
+    console.log(`\n▸ Crawling as ${account.key} (${config.accounts.indexOf(account) + 1} of ${config.accounts.length})`);
 
     const page = await context.newPage();
     await page.goto(new URL(form.path, base).href);
@@ -207,6 +210,13 @@ for (const account of config.accounts) {
 
     await Promise.all(Array.from({ length: concurrency }, worker));
 
+    const crawled = results.slice(accountStart);
+    console.log(`▸ ${account.key}: ${crawled.length} pages, ${crawled.filter(isBroken).length} with problems`);
+
+    if (scope === 'cp' && admin.targets.length) {
+        console.log(`▸ Control panel save and create tests (${admin.targets.length} content types)`);
+    }
+
     if (scope === 'cp') {
         for (const target of admin.targets) {
             for (const action of ['save', 'create']) {
@@ -217,6 +227,8 @@ for (const account of config.accounts) {
                 console.log(`[${account.key}] ${action} ${target.key} ${result.status ?? '---'}${result.skipped ? ' skipped' : result.denied ? ' denied' : isBroken(result) ? ' ✗' : ''}`);
             }
         }
+        const actions = results.slice(accountStart).filter((r) => r.action);
+        console.log(`▸ Control panel tests: ${actions.length} run, ${actions.filter(isBroken).length} failed`);
     }
 
     await context.close();
