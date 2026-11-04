@@ -4,10 +4,11 @@
 /*
  * Runs the site check for the site in the current directory.
  *
- *   site-check run              full run: compare, build, purge, seed, prepare, crawl, report
- *   site-check compare [base]   list package changes against the baseline branch (default: live)
- *   site-check shell            open a shell in the app container
- *   site-check down    stop and remove the containers and their volumes
+ *   site-check run [--seed=<n>]   full run: compare, build, purge, seed, prepare, crawl, report
+ *                                 (--seed reproduces an earlier run's data; the report shows each run's seed)
+ *   site-check compare [base]     list package changes against the baseline branch (default: live)
+ *   site-check shell              open a shell in the app container
+ *   site-check down               stop and remove the containers and their volumes
  *
  * Nothing here reads the site's .env files: the app container gets site-check.yaml's env values
  * plus .env.site-check, and nothing else.
@@ -21,11 +22,10 @@ if (! is_file($site.'/vendor/autoload.php')) {
     exit(1);
 }
 
+// This runner's own Settings, loaded before the site's autoloader so a checkout run against a site with an older
+// installed copy of the package doesn't pick up that copy's class.
+require_once $package.'/src/Settings.php';
 require $site.'/vendor/autoload.php';
-
-if (! class_exists(Frame\SiteCheck\Settings::class)) {
-    require_once $package.'/src/Settings.php';
-}
 
 use Frame\SiteCheck\Settings;
 use Symfony\Component\Process\Process;
@@ -82,21 +82,31 @@ $stamp = date('Y-m-d-His');
 $reportDir = "{$work}/reports/{$stamp}";
 @mkdir($reportDir, 0777, true);
 
+// Problems running the tests (not site problems) go here, never into the findings report.
+$GLOBALS['siteCheckLog'] = "{$reportDir}/site-check.log";
+
+// Every run seeds from a known number, so a failure can be reproduced with `site-check run --seed=<n>`.
+$seedOption = current(preg_grep('/^--seed=\d+$/', $argv)) ?: null;
+$seed = $seedOption ? (int) substr($seedOption, 7) : random_int(1, 999999);
+echo "\n\033[1m▸ Seed {$seed}\033[0m (rerun with: site-check run --seed={$seed})\n";
+
 compare($site, $work, $settings->get('baseline', 'live'));
 copy("{$work}/changes.json", "{$reportDir}/changes.json");
 
 $keep = implode(' ', array_map('escapeshellarg', $settings->get('statamic.keep', [])));
 writeBootEntries($work, $settings->get('statamic.boot_entries', []));
 
-step('Starting containers', $compose(['up', '-d', '--build', '--wait', 'mysql', 'redis', 'app']));
+step('Starting containers', $compose(['up', '-d', '--build', '--wait', 'mysql', 'redis', 'mailpit', 'app']));
 step('Copying the site into the container', $app("site-check-sync {$keep}"));
-step('Installing Composer dependencies', $app('composer install --no-interaction --prefer-dist --no-progress'));
+step('Installing Composer dependencies', $compose(['exec', '-T', '-e', 'COMPOSER_AUTH', 'app', 'bash', '-lc',
+    'composer install --no-interaction --prefer-dist --no-progress']), ['COMPOSER_AUTH' => composerAuth()]);
 step('Installing Node dependencies', $app('pnpm install --frozen-lockfile'));
-step('Preflight', $app('php artisan site-check:preflight'));
-step('Resetting the database', $app('php artisan site-check:reset'));
-step('Seeding', $app('php artisan site-check:seed'));
-step('Checking seeded data', $app('php artisan site-check:freshness --json=storage/site-check-freshness.json'));
-step('Resetting Algolia', $app('php artisan site-check:algolia-reset'));
+$task = fn (string $args) => $app("php /frame-site-check/scripts/task.php {$args}");
+step('Preflight', $task('site-check:preflight'));
+step('Resetting the database', $task('site-check:reset'));
+step('Seeding', $task("site-check:seed --seed={$seed}"));
+step('Checking seeded data', $task('site-check:freshness --json=storage/site-check-freshness.json'));
+step('Resetting Algolia', $task('site-check:algolia-reset'));
 
 $prepare = array_merge(
     ['php artisan storage:link', 'php artisan statamic:stache:warm'],
@@ -118,16 +128,31 @@ $routes = capture($app('php artisan route:list --json --method=GET'));
 file_put_contents("{$work}/routes.json", $routes);
 file_put_contents("{$work}/freshness.json", capture($app('cat storage/site-check-freshness.json')));
 
+// Written by seeding; missing on sites with no control panel adapter, which skips the save and create tests.
+$adminTargets = json_decode(capture($app('cat storage/site-check-admin.json 2>/dev/null')), true) ?? [];
+
 file_put_contents("{$work}/crawl-config.json", json_encode([
     'baseUrl' => 'http://app:8000',
+    'seed' => $seed,
     'outDir' => "/out/reports/{$stamp}",
     'accounts' => array_values(array_filter($settings->accounts(), fn ($a) => $a['crawl'] ?? true)),
     'crawl' => $settings->get('crawl', []),
     'routes' => '/out/routes.json',
     'freshness' => '/out/freshness.json',
+    'admin' => [...$settings->get('admin', []), 'targets' => $adminTargets],
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
+// Mail from seeding isn't what's under test; only what the crawl and the control panel tests send is kept.
+run($app('curl -s -X DELETE http://mailpit:8025/api/v1/messages > /dev/null'));
+
 $crawl = run($compose(['run', '--rm', 'crawler']));
+
+saveMail($app, $reportDir);
+
+// The crawler exits 1 when it finds site problems; a missing results.json means it crashed instead.
+if (! is_file("{$reportDir}/results.json")) {
+    logIssue('Crawl', $crawl);
+}
 
 file_put_contents("{$reportDir}/laravel.log", capture($app('cat storage/logs/laravel.log 2>/dev/null')));
 
@@ -344,6 +369,10 @@ function writeRuntime(string $site, string $package, string $work, string $proje
             'redis' => [
                 'image' => 'redis:7.4-alpine',
             ],
+            // Catches every email the app sends (SMTP on 1025, API on 8025); nothing leaves the container network.
+            'mailpit' => [
+                'image' => 'axllent/mailpit:v1.27.0',
+            ],
             'app' => [
                 'build' => [
                     'context' => "{$package}/docker",
@@ -366,6 +395,7 @@ function writeRuntime(string $site, string $package, string $work, string $proje
                 'depends_on' => [
                     'mysql' => ['condition' => 'service_healthy'],
                     'redis' => ['condition' => 'service_started'],
+                    'mailpit' => ['condition' => 'service_started'],
                 ],
             ],
             'crawler' => [
@@ -430,19 +460,85 @@ function writeBootEntries(string $work, array $entries): void
     }
 }
 
-function step(string $label, array $command): void
+/**
+ * Every email caught during the crawl: mail.json lists them (when, from, to, subject, attachments) and mail/<n>.html
+ * holds each body, so a broken or unexpected email can be opened and traced.
+ */
+function saveMail(callable $app, string $reportDir): void
+{
+    $list = json_decode(capture($app('curl -s "http://mailpit:8025/api/v1/messages?limit=500"')), true);
+    $messages = [];
+
+    foreach (array_reverse($list['messages'] ?? []) as $index => $summary) {
+        $message = json_decode(capture($app("curl -s http://mailpit:8025/api/v1/message/{$summary['ID']}")), true) ?? [];
+        $file = sprintf('mail/%03d.html', $index + 1);
+
+        @mkdir("{$reportDir}/mail", 0777, true);
+        file_put_contents("{$reportDir}/{$file}", $message['HTML'] ?? nl2br(htmlspecialchars($message['Text'] ?? '')));
+
+        $messages[] = [
+            'at' => $summary['Created'] ?? null,
+            'from' => $summary['From']['Address'] ?? null,
+            'to' => array_column($summary['To'] ?? [], 'Address'),
+            'subject' => $summary['Subject'] ?? null,
+            'attachments' => $summary['Attachments'] ?? 0,
+            'body' => $file,
+        ];
+    }
+
+    file_put_contents("{$reportDir}/mail.json", json_encode($messages, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    echo count($messages)." emails caught: {$reportDir}/mail.json\n";
+}
+
+/**
+ * The host's GitHub token, so the container can install private packages. Passed to the one
+ * `composer install` command as an environment variable; never written to a file.
+ */
+function composerAuth(): string
+{
+    $token = trim(capture(['composer', 'config', '--global', 'github-oauth.github.com']))
+        ?: trim(capture(['gh', 'auth', 'token']));
+
+    return $token ? json_encode(['github-oauth' => ['github.com' => $token]]) : '{}';
+}
+
+function step(string $label, array $command, ?array $env = null): void
 {
     echo "\n\033[1m▸ {$label}\033[0m\n";
 
-    if (run($command) !== 0) {
+    if (($code = run($command, $env)) !== 0) {
+        logIssue($label, $code);
         fail("Step failed: {$label}");
     }
 }
 
-function run(array $command): int
+/**
+ * Appends a failed step to the run's site-check.log: when, which step, the exit code and the end of its output.
+ * The agent adds what it tried and the suspected cause below the entry.
+ */
+function logIssue(string $label, int $code): void
 {
-    $process = new Process($command, null, null, null, null);
-    $process->run(fn ($type, $output) => fwrite($type === Process::ERR ? STDERR : STDOUT, $output));
+    if (! isset($GLOBALS['siteCheckLog'])) {
+        return;
+    }
+
+    file_put_contents($GLOBALS['siteCheckLog'], sprintf(
+        "[%s] %s failed (exit %d)\n%s\n\n",
+        date('Y-m-d H:i:s'),
+        $label,
+        $code,
+        trim($GLOBALS['lastOutput'] ?? ''),
+    ), FILE_APPEND);
+}
+
+function run(array $command, ?array $env = null): int
+{
+    $GLOBALS['lastOutput'] = '';
+    $process = new Process($command, null, $env, null, null);
+    $process->run(function ($type, $output) {
+        fwrite($type === Process::ERR ? STDERR : STDOUT, $output);
+        $GLOBALS['lastOutput'] = substr($GLOBALS['lastOutput'].$output, -4000);
+    });
 
     return $process->getExitCode();
 }

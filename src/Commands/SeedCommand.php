@@ -2,12 +2,13 @@
 
 namespace Frame\SiteCheck\Commands;
 
+use Frame\SiteCheck\Statamic\AdminManifest;
 use Frame\SiteCheck\Statamic\ContentSeeder;
 use Frame\SiteCheck\Statamic\RunwaySeeder;
 
 class SeedCommand extends SiteCheckCommand
 {
-    protected $signature = 'site-check:seed';
+    protected $signature = 'site-check:seed {--seed= : Faker seed; the same seed reproduces the same data}';
 
     protected $description = 'Seed Runway models and Statamic content from blueprints, then run the site seeders and create accounts';
 
@@ -15,6 +16,12 @@ class SeedCommand extends SiteCheckCommand
     {
         // Nothing syncs to search while seeding; the prepare step reimports everything afterwards.
         config(['scout.driver' => 'null']);
+
+        if (($seed = $this->option('seed')) !== null) {
+            fake()->seed((int) $seed);
+            mt_srand((int) $seed);
+            $this->line("Seeding with seed {$seed}.");
+        }
 
         $statamic = class_exists(\Statamic\Statamic::class);
         $content = $statamic
@@ -52,6 +59,11 @@ class SeedCommand extends SiteCheckCommand
 
         $this->seedControlPanelAccounts();
 
+        if ($this->settings->get('admin.enabled', true)) {
+            $count = (new AdminManifest($this->settings->get('admin', []), $content))->write(storage_path('site-check-admin.json'));
+            $this->line("{$count} control panel save and create targets written.");
+        }
+
         return self::SUCCESS;
     }
 
@@ -62,14 +74,22 @@ class SeedCommand extends SiteCheckCommand
                 continue;
             }
 
-            \Statamic\Facades\User::make()
+            $user = \Statamic\Facades\User::make()
                 ->email($account['email'])
                 ->password($account['password'])
-                ->makeSuper()
-                ->set('name', $account['name'] ?? 'Site check '.$account['key'])
-                ->save();
+                ->set('name', $account['name'] ?? 'Site check '.$account['key']);
 
-            $this->line("Control panel account {$account['email']} created.");
+            // An account with roles tests what those roles can do; without, it's a super user.
+            $roles = $account['roles'] ?? [];
+            foreach ($roles as $role) {
+                $user->assignRole($role);
+            }
+            if (! $roles) {
+                $user->makeSuper();
+            }
+            $user->save();
+
+            $this->line("Control panel account {$account['email']} created (".($roles ? implode(', ', $roles) : 'super user').').');
         }
     }
 }

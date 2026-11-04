@@ -145,9 +145,12 @@ class RunwaySeeder
         };
     }
 
+    // Picks go through Faker rather than the database's RAND(), so a run's --seed reproduces the same data.
     protected function randomKey(string $table, string $column): mixed
     {
-        return DB::table($table)->inRandomOrder()->value($column);
+        $keys = DB::table($table)->orderBy($column)->pluck($column)->all();
+
+        return $keys ? fake()->randomElement($keys) : null;
     }
 
     protected function attach($resource): void
@@ -169,11 +172,13 @@ class RunwaySeeder
             $relation = $model->{$relationName}();
             $related = $relation->getRelated();
 
-            foreach (DB::table($table)->pluck($model->getKeyName()) as $key) {
-                $ids = $related->newQueryWithoutScopes()->inRandomOrder()->limit(2)->pluck($related->getKeyName());
+            $relatedKeys = $related->newQueryWithoutScopes()->orderBy($related->getKeyName())->pluck($related->getKeyName())->all();
+
+            foreach (DB::table($table)->orderBy($model->getKeyName())->pluck($model->getKeyName()) as $key) {
+                $ids = fake()->randomElements($relatedKeys, min(2, count($relatedKeys)));
 
                 try {
-                    $model->newQueryWithoutScopes()->find($key)?->{$relationName}()->syncWithoutDetaching($ids->all());
+                    $model->newQueryWithoutScopes()->find($key)?->{$relationName}()->syncWithoutDetaching($ids);
                 } catch (Throwable $e) {
                     $this->errors[] = "{$resource->handle()}.{$relationName}: ".Str::limit($e->getMessage(), 300);
                     break;

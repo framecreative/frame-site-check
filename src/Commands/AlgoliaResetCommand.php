@@ -14,8 +14,14 @@ class AlgoliaResetCommand extends SiteCheckCommand
     {
         $algolia = Algolia::admin();
 
+        $tasks = [];
+
         foreach ($algolia->indexNames() as $index) {
-            $algolia->deleteIndex($index)->throw();
+            $tasks[$index] = $algolia->deleteIndex($index)->throw()->json('taskID');
+        }
+
+        foreach ($tasks as $index => $taskId) {
+            $algolia->waitForTask($index, $taskId);
             $this->line("Deleted Algolia index {$index}.");
         }
 

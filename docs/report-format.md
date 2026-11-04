@@ -5,17 +5,25 @@ Every site check run produces two things:
 - **The crawl report** (`.site-check/reports/<run>/index.html`, plus `results.json`, `changes.json`, `laravel.log`
   and screenshots).
   Raw evidence, generated automatically. Not the deliverable.
+- **`mail.json`** in the same folder: every email sent during the crawl and control panel tests (caught by Mailpit,
+  never delivered), with each body in `mail/<n>.html`.
+- **`site-check.log`** in the same folder: problems running the tests (a failed step, a crashed crawler), not site
+  problems. The runner appends failed steps itself. Never part of the findings report.
 - **The findings report** (`.site-check/reports/<run>/findings.md`). The deliverable: what the run found,
   classified and de-duplicated, written so someone who hasn't followed the work can act on it.
   It always follows this format.
 
 ## Rules
 
+- **Report what this run found.** Findings from earlier runs appear only when continuing a report (below), and
+  only if this run still shows them.
 - **One finding per root cause.** The same error on many pages or accounts is one finding; list where it occurs.
 - **Never mark a finding Confirmed without evidence in the code** (a `file:line` or the exact config) or a
   reproduction. Anything else is "Needs investigation".
 - **Classify every finding** (below). Seeding gaps are site check problems, not site problems; keep them separate.
 - **Say what to do**, not just what happened.
+- **Every error comes with where it happened:** the source file and line, or the failing URL. A bare message
+  isn't evidence.
 - Short, literal sentences. Australian English.
 
 ## Classifications
@@ -34,7 +42,6 @@ Every site check run produces two things:
 | --- | --- |
 | Confirmed | Cause identified with code evidence or a reproduction. |
 | Needs investigation | Seen in the run; cause not yet established. |
-| Fixed | Resolved, with where the fix lives. |
 
 ## Severity
 
@@ -52,10 +59,12 @@ Every site check run produces two things:
 ## Run
 - Branch / commit: <branch> @ <short hash> (<"clean" or "with uncommitted changes">)
 - Baseline: <branch> @ <short hash>
+- Seed: <n> (`site-check run --seed=<n>` rebuilds the same data)
 - Crawl report: <path to index.html>
 - Pages crawled: <total>, by account: <account: n, …>
 - Pages with problems: <n>
 - GET routes not reached: <n> (see Coverage)
+- Control panel: <n> saves (<n> failed), <n> creates (<n> failed, <n> skipped)
 
 ## Summary
 <Two to four sentences: are the updates safe to deploy, and the findings that need action first.>
@@ -73,22 +82,36 @@ Every site check run produces two things:
 
 ### <ID>. <Short title>
 - **Classification:** <Site bug | Upgrade regression | Vendor | Seeding gap | Environment>
-- **Status:** <Confirmed | Needs investigation | Fixed>
+- **Status:** <Confirmed | Needs investigation>
 - **Severity:** <High | Medium | Low>
 - **Where:** <file:line, route or URL; accounts affected>
-- **Evidence:** <the error, and the code or config that causes it>
+- **Evidence:** <the exact error, the source file and line it was thrown from (from the mapped stack in
+  results.json), the first relevant stack frames, and the code or config that causes it>
 - **Action:** <what to do, and where>
 
 ## Coverage
 - Routes not reached that matter: <list, with why (no seeded data, behind a form, iframe…)>
 - Seeding gaps: <fieldtypes with no generator, tables left empty that pages depend on>
+- Not testable: <control panel creates skipped (and the fields they needed), types in admin.skip, anything else
+  the run couldn't exercise>
 
-## Site check issues
-<Problems running the tests, not site problems. Per issue: the step, the exact error, what was tried, the
-suspected cause. "None" if none.>
+## Resolved since last run
+<Only when continuing a report. One line per finding from the previous run that this run no longer shows:
+ID, title, and what fixed it if known. Each is listed once; the next run drops it.>
 
-## Site check changes made during this run
-<Fixes to the shared site check or the site's site-check.yaml/seeders, so the next run is comparable. "None" if none.>
+Artifact: <the published page's link, once published>
 ```
 
-IDs are the site prefix and a number (`L1`, `F3`) and stay stable across runs of the same piece of work.
+IDs are the site prefix and a number (`L1`, `F3`).
+
+## New or continued report
+
+- **New report:** IDs start at 1, and a new artifact is published.
+- **Continued report** (re-running to check fixes): a finding still present keeps its ID; a new one takes the next
+  unused number; a finding no longer present moves to Resolved since last run for this one report. The same artifact
+  is updated, using the link in the previous `findings.md`.
+
+## Published report
+
+When the findings report is published as a page, the Resolved since last run entries are shown in green:
+`#2c7551` on a light background and `#6cc191` on a dark one.

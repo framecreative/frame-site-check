@@ -57,6 +57,22 @@ class Algolia
     }
 
     /**
+     * Waits until Algolia has applied a task, so later steps don't queue behind it. Some apps process tasks slowly.
+     */
+    public function waitForTask(string $index, int $taskId, int $timeoutSeconds = 300): void
+    {
+        $deadline = time() + $timeoutSeconds;
+
+        while ($this->request('read', fn ($http) => $http->get('/1/indexes/'.rawurlencode($index)."/task/{$taskId}"))
+            ->throw()->json('status') !== 'published') {
+            if (time() >= $deadline) {
+                throw new \RuntimeException("Algolia task {$taskId} on {$index} still not applied after {$timeoutSeconds} seconds.");
+            }
+            sleep(2);
+        }
+    }
+
+    /**
      * Tries Algolia's hosts in turn, as its own clients do: the primary host's DNS can fail intermittently
      * inside a container while the fallback hosts resolve fine.
      */

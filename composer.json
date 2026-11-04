@@ -22,11 +22,6 @@
         "bin/site-check"
     ],
     "extra": {
-        "class": "Frame\\SiteCheck\\Composer\\SkillLinker",
-        "laravel": {
-            "providers": [
-                "Frame\\SiteCheck\\SiteCheckServiceProvider"
-            ]
-        }
+        "class": "Frame\\SiteCheck\\Composer\\SkillLinker"
     }
 }

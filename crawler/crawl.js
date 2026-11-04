@@ -5,6 +5,7 @@
 
 import { chromium } from 'playwright';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { SourceMap } from 'node:module';
 import path from 'node:path';
 
 const config = JSON.parse(await readFile(process.argv[2], 'utf8'));
@@ -22,12 +23,57 @@ const DEFAULT_SKIP = [
 const skip = [...DEFAULT_SKIP, ...(crawl.skip ?? [])].map((pattern) => new RegExp(pattern, 'i'));
 
 const cpPath = crawl.cp_path ?? '/admin';
+const admin = {
+    targets: [],
+    save_shortcut: 'Control+s',
+    title_selector: 'main input[type="text"]:visible',
+    ...(config.admin ?? {}),
+};
 const login = {
     frontend: { path: '/login', email: '#email', password: '#password', ...(crawl.login?.frontend ?? {}) },
     cp: { path: `${cpPath}/auth/login`, email: 'input[name="email"]', password: 'input[name="password"]', ...(crawl.login?.cp ?? {}) },
 };
 
 await mkdir(path.join(config.outDir, 'shots'), { recursive: true });
+
+// Errors point at built bundles; the source maps the site check build writes map them back to the site's own files.
+const sourceMaps = new Map();
+const sourceMapFor = (fileUrl) => {
+    if (!sourceMaps.has(fileUrl)) {
+        sourceMaps.set(fileUrl, fetch(`${fileUrl}.map`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((payload) => (payload ? new SourceMap(payload) : null))
+            .catch(() => null));
+    }
+    return sourceMaps.get(fileUrl);
+};
+
+const resolveFrames = async (text) => {
+    const frames = [...text.matchAll(/(https?:\/\/[^\s()]+?\.js):(\d+):(\d+)/g)];
+    let resolved = text;
+    for (const [match, file, line, column] of frames) {
+        const entry = (await sourceMapFor(file))?.findEntry(Number(line) - 1, Number(column) - 1);
+        if (entry?.originalSource) {
+            const source = entry.originalSource.replace(/^.*?(?=resources\/|node_modules\/|vendor\/)/, '');
+            resolved = resolved.replace(match, `${source}:${entry.originalLine + 1}:${entry.originalColumn + 1}`);
+        }
+    }
+    return resolved;
+};
+
+const STACK_FRAMES = 8;
+// Some errors arrive with an empty stack, or a stack that doesn't repeat the message; always keep the message.
+const errorEntry = (err) => {
+    const stack = (err.stack || '').split('\n').filter((line) => line.trim().startsWith('at ')).slice(0, STACK_FRAMES);
+    return [`Uncaught: ${err.message}`, ...stack].join('\n');
+};
+const consoleEntry = (msg) => {
+    const { url, lineNumber, columnNumber } = msg.location();
+    if (!url) return msg.text();
+    return msg.text().startsWith('Failed to load resource')
+        ? `${msg.text()}: ${url}`
+        : `${msg.text()}\n    at ${url}:${lineNumber + 1}:${columnNumber + 1}`;
+};
 
 // /course/a, /course/b … count as /course/* so only a few pages of each kind are visited.
 const patternOf = (url) =>
@@ -40,6 +86,7 @@ const patternOf = (url) =>
 const browser = await chromium.launch();
 const results = [];
 let shotIndex = 0;
+let failureIndex = 0;
 
 for (const account of config.accounts) {
     const scope = account.guard === 'cp' ? 'cp' : 'frontend';
@@ -90,8 +137,8 @@ for (const account of config.accounts) {
         const result = { account: account.key, url: url.href, pattern: patternOf(url), status: null,
             console: [], failed: [], images: [], toasts: [], shot: null };
 
-        tab.on('console', (msg) => msg.type() === 'error' && result.console.push(msg.text()));
-        tab.on('pageerror', (err) => result.console.push(`Uncaught: ${err.message}`));
+        tab.on('console', (msg) => msg.type() === 'error' && result.console.push(consoleEntry(msg)));
+        tab.on('pageerror', (err) => result.console.push(errorEntry(err)));
         tab.on('requestfailed', (req) => {
             const error = req.failure()?.errorText ?? 'failed';
             if (error !== 'net::ERR_ABORTED') result.failed.push(`${error} ${req.url()}`);
@@ -133,6 +180,8 @@ for (const account of config.accounts) {
             await tab.close();
         }
 
+        result.console = await Promise.all(result.console.map(resolveFrames));
+
         return result;
     };
 
@@ -157,12 +206,175 @@ for (const account of config.accounts) {
     };
 
     await Promise.all(Array.from({ length: concurrency }, worker));
+
+    if (scope === 'cp') {
+        for (const target of admin.targets) {
+            for (const action of ['save', 'create']) {
+                const targetPath = action === 'save' ? target.edit : target.create;
+                if (!targetPath) continue;
+                const result = await adminAction(context, account, target, action, new URL(targetPath, base));
+                results.push(result);
+                console.log(`[${account.key}] ${action} ${target.key} ${result.status ?? '---'}${result.skipped ? ' skipped' : result.denied ? ' denied' : isBroken(result) ? ' ✗' : ''}`);
+            }
+        }
+    }
+
     await context.close();
 }
 
 await browser.close();
 
+// Saves an existing record unchanged, or creates one with only its title filled, through the control panel's save
+// shortcut. A create the site's validation rejects is skipped rather than broken, with the fields it needed listed.
+async function adminAction(context, account, target, action, url) {
+    const tab = await context.newPage();
+    const result = { account: account.key, url: url.href, pattern: `admin:${action}:${target.key}`, action,
+        status: null, console: [], failed: [], images: [], toasts: [], validation: [], skipped: false, denied: false, shot: null };
+
+    tab.on('console', (msg) => msg.type() === 'error' && result.console.push(consoleEntry(msg)));
+    tab.on('pageerror', (err) => result.console.push(errorEntry(err)));
+
+    try {
+        if (target.elevate) await elevate(context, account);
+
+        const response = await tab.goto(url.href, { waitUntil: 'load', timeout: 45000 });
+        if ((response?.status() ?? 0) >= 400) {
+            result.status = response.status();
+            result.denied = result.status === 403;
+            if (!result.denied) result.failed.push(`${result.status} ${url.href}`);
+            return result;
+        }
+        await tab.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+        const isSubmit = (request) => {
+            const pathname = new URL(request.url()).pathname;
+            return ['POST', 'PATCH'].includes(request.method())
+                && pathname.startsWith(target.submits)
+                && !/\/(preview|title-format|listing-api|actions)(\/|$)/.test(pathname);
+        };
+
+        // The form keeps its own keys (blueprint, site…); every field in the seeded payload replaces the form's value,
+        // so a create needs nothing filled by hand. The merged body is what the failure file records.
+        let sentBody = null;
+        const direct = action === 'create' && target.submit_directly && target.payload;
+        if (action === 'create' && !direct) {
+            const title = tab.locator(admin.title_selector).first();
+            if (await title.count()) await title.fill(`Site check ${target.label}`);
+
+            if (target.payload) {
+                await tab.route('**/*', async (route) => {
+                    const request = route.request();
+                    if (!isSubmit(request)) return route.fallback();
+                    const form = JSON.parse(request.postData() || '{}');
+                    sentBody = { ...form, ...target.payload };
+                    return route.continue({ postData: JSON.stringify(sentBody) });
+                });
+            }
+        }
+
+        const submitted = tab.waitForResponse((res) => isSubmit(res.request()), { timeout: 20000 });
+        if (direct) {
+            // A create page with no save shortcut (a wizard): the seeded payload is posted from the page, as its form would.
+            sentBody = target.payload;
+            await cpFetch(tab, new URL(target.submits, config.baseUrl).href, sentBody);
+        } else {
+            await tab.keyboard.press(admin.save_shortcut);
+        }
+        const saved = await submitted;
+        result.status = saved.status();
+
+        if (result.status === 422) {
+            const body = await saved.json().catch(() => ({}));
+            result.validation = Object.entries(body.errors ?? {}).map(([field, messages]) => `${field}: ${[].concat(messages).join(' ')}`);
+            // Without seeded values a create can only fill its title, so a 422 there means "needs more" rather than broken.
+            result.skipped = action === 'create' && !target.payload;
+        } else if (result.status === 403) {
+            result.denied = true;
+        } else if (result.status >= 400) {
+            const body = await saved.json().catch(() => null);
+            result.failed.push(`${result.status} ${saved.url()}${body?.message ? ` ${body.message}` : ''}`);
+        }
+
+        if (result.status >= 400 && !result.skipped && !result.denied) {
+            result.submitted = await writeFailure(target, action, url, saved, sentBody);
+        }
+
+        await tab.waitForTimeout(1500);
+        if (!result.skipped && !result.denied) {
+            result.toasts = await tab.$$eval(toastSelector, (els) => els.map((el) => el.textContent.trim())).catch(() => []);
+        }
+        result.shot = `shots/${String(++shotIndex).padStart(4, '0')}.jpg`;
+        await tab.screenshot({ path: path.join(config.outDir, result.shot), fullPage: true, type: 'jpeg', quality: 60 });
+    } catch (err) {
+        result.console.push(`Crawler: ${action} did not complete: ${err.message.split('\n')[0]}`);
+    } finally {
+        await tab.close();
+    }
+
+    result.console = await Promise.all(result.console.map(resolveFrames));
+
+    return result;
+}
+
+// A JSON request from inside a control panel page, with the CSRF token the CP itself uses.
+async function cpFetch(tab, url, body) {
+    return tab.evaluate(async ({ url, body }) => {
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': window.StatamicConfig?.csrfToken ?? '',
+            },
+            body: JSON.stringify(body),
+        });
+        return response.status;
+    }, { url, body });
+}
+
+// Statamic asks for the password again before some pages (users, for one). Confirming it once elevates the session
+// for every tab in this account's browser context.
+async function elevate(context, account) {
+    const tab = await context.newPage();
+    try {
+        await tab.goto(new URL(cpPath, config.baseUrl).href, { waitUntil: 'load', timeout: 45000 });
+        await cpFetch(tab, new URL(`${cpPath}/elevated-session`, config.baseUrl).href, { password: account.password });
+    } finally {
+        await tab.close();
+    }
+}
+
+// The exact data a failed save or create sent, and what came back, so the failure can be traced to its data.
+// Rerunning with the report's seed rebuilds the same data to test a fix against.
+async function writeFailure(target, action, url, response, sentBody = null) {
+    const request = response.request();
+    const parse = (text) => {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return text;
+        }
+    };
+    const file = `failures/${String(++failureIndex).padStart(3, '0')}-${action}-${target.key}.json`;
+
+    await mkdir(path.join(config.outDir, 'failures'), { recursive: true });
+    await writeFile(path.join(config.outDir, file), JSON.stringify({
+        target: target.key,
+        action,
+        page: url.href,
+        at: new Date().toISOString(),
+        seed: config.seed ?? null,
+        request: { method: request.method(), url: request.url(), body: sentBody ?? parse(request.postData() ?? '') },
+        response: { status: response.status(), body: parse(await response.text().catch(() => '')) },
+    }, null, 2));
+
+    return file;
+}
+
 function isBroken(r) {
+    if (r.skipped || r.denied) return false;
     return !r.status || r.status >= 400 || r.console.length || r.failed.length || r.images.length || r.toasts.length;
 }
 
@@ -183,6 +395,12 @@ const freshness = JSON.parse(await readFile(config.freshness, 'utf8').catch(() =
 
 results.sort((a, b) => Number(isBroken(b)) - Number(isBroken(a)) || a.url.localeCompare(b.url));
 const broken = results.filter(isBroken);
+const adminResults = results.filter((r) => r.action);
+const adminSummary = ['save', 'create'].map((action) => {
+    const done = adminResults.filter((r) => r.action === action);
+    return `${done.length} ${action === 'save' ? 'saves' : 'creates'} (${done.filter(isBroken).length} failed, `
+        + `${done.filter((r) => r.skipped).length} skipped, ${done.filter((r) => r.denied).length} denied by the role)`;
+}).join(', ');
 
 const escape = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const list = (title, items) => (items?.length ? `<h4>${title}</h4><ul>${items.map((i) => `<li>${escape(i)}</li>`).join('')}</ul>` : '');
@@ -201,10 +419,13 @@ const html = `<!doctype html>
     h3 { margin: 0 0 4px; font-size: 14px; word-break: break-all; }
     h4 { margin: 8px 0 2px; font-size: 13px; }
     ul { margin: 0; padding-left: 18px; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+    li { white-space: pre-wrap; }
     .meta { color: #666; }
 </style>
 <h1>Site check report</h1>
-<p>${results.length} pages crawled, <strong>${broken.length} with problems</strong>. ${new Date().toLocaleString('en-AU')}</p>
+<p>${results.length - adminResults.length} pages crawled, <strong>${broken.length} with problems</strong>. ${new Date().toLocaleString('en-AU')}</p>
+<p>Control panel: ${adminResults.length ? adminSummary : 'no save or create tests ran.'}</p>
+<p>Seed: <strong>${escape(config.seed ?? 'none')}</strong>${config.seed ? ` (rebuild this data with <code>site-check run --seed=${escape(config.seed)}</code>)` : ''}</p>
 ${section('Routes no page reached', unreached, 'Every GET route was reached.')}
 ${section('Tables with no seeded rows', freshness.emptyTables, 'None.')}
 ${section('Columns null in every seeded row', freshness.nullColumns, 'None.')}
@@ -214,7 +435,9 @@ ${results
     <div>${r.shot ? `<a href="${r.shot}" target="_blank"><img src="${r.shot}" loading="lazy"></a>` : 'No screenshot'}</div>
     <div>
         <h3>${escape(r.url)}</h3>
-        <div class="meta">${escape(r.account)} · status ${r.status ?? 'none'} · pattern ${escape(r.pattern)}</div>
+        <div class="meta">${escape(r.account)} · status ${r.status ?? 'none'} · ${r.action ? `${r.action}${r.skipped ? ' skipped' : ''}${r.denied ? ' denied by the role' : ''}` : 'pattern'} ${escape(r.pattern)}</div>
+        ${r.submitted ? `<h4>Submitted data</h4><p><a href="${r.submitted}" target="_blank">${escape(r.submitted)}</a></p>` : ''}
+        ${list(r.skipped ? 'Fields the create needed' : 'Validation errors', r.validation)}
         ${list('Error toasts', r.toasts)}
         ${list('Broken images', r.images)}
         ${list('Console errors', r.console)}
@@ -226,5 +449,6 @@ ${results
 await writeFile(path.join(config.outDir, 'index.html'), html);
 await writeFile(path.join(config.outDir, 'results.json'), JSON.stringify({ results, unreached, freshness }, null, 2));
 
-console.log(`\n${results.length} pages, ${broken.length} with problems, ${unreached.length} routes not reached.`);
+console.log(`\n${results.length - adminResults.length} pages, ${broken.length} with problems, ${unreached.length} routes not reached.`);
+console.log(`Control panel: ${adminResults.length ? adminSummary : 'no save or create tests ran.'}`);
 process.exit(broken.length ? 1 : 0);

@@ -29,6 +29,14 @@ class Settings
         'STATAMIC_GIT_ENABLED' => 'false',
         'BROADCAST_DRIVER' => 'log',
         'BROADCAST_CONNECTION' => 'log',
+        // Every email goes to the Mailpit container, never out; the run saves what was sent to mail.json.
+        'MAIL_MAILER' => 'smtp',
+        'MAIL_HOST' => 'mailpit',
+        'MAIL_PORT' => '1025',
+        'MAIL_SCHEME' => '',
+        'MAIL_ENCRYPTION' => '',
+        'MAIL_USERNAME' => '',
+        'MAIL_PASSWORD' => '',
     ];
 
     /** Env values every run starts with; a site's site-check.yaml can override these. */
@@ -37,7 +45,6 @@ class Settings
         'APP_URL' => 'http://app:8000',
         'LOG_CHANNEL' => 'single',
         'LOG_LEVEL' => 'debug',
-        'MAIL_MAILER' => 'log',
         'CACHE_DRIVER' => 'redis',
         'CACHE_STORE' => 'redis',
         'SESSION_DRIVER' => 'file',

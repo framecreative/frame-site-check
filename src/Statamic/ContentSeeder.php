@@ -215,13 +215,14 @@ class ContentSeeder
      * Values for a set of fields. Relationship fields are filled in a second pass ($relationships = true),
      * once everything they can point at exists.
      */
-    public function values(LaravelCollection $fields, bool $relationships): array
+    public function values(LaravelCollection $fields, bool $relationships, bool $topLevel = true): array
     {
         $values = [];
 
         foreach ($fields as $handle => $field) {
-            // Timestamps are left to the model; a generated deleted_at would soft-delete the record.
-            if (in_array($handle, ['title', 'slug', 'created_at', 'updated_at', 'deleted_at'], true)
+            // The record's own title and slug are set separately, and timestamps are left to the model (a generated
+            // deleted_at would soft-delete the record). Inside grids, replicators and groups these are ordinary fields.
+            if (($topLevel && in_array($handle, ['title', 'slug', 'created_at', 'updated_at', 'deleted_at'], true))
                 || $this->isRelationship($field) !== $relationships) {
                 continue;
             }
@@ -250,6 +251,19 @@ class ContentSeeder
 
         $multiple = (int) $field->get('max_items', $field->get('max_files', 0)) !== 1;
 
+        // A field validated as unique can't reuse a small range of values across records.
+        if (str_contains(implode('|', array_map('strval', (array) $field->get('validate', []))), 'unique')) {
+            $unique = match ($field->type()) {
+                'integer' => fake()->unique()->numberBetween(100000, 9999999),
+                'text', 'slug' => fake()->unique()->regexify('[a-z0-9]{12}'),
+                default => null,
+            };
+
+            if ($unique !== null) {
+                return $unique;
+            }
+        }
+
         return match ($field->type()) {
             'text' => $this->text($field),
             'slug' => fake()->slug(3),
@@ -275,7 +289,7 @@ class ContentSeeder
             'belongs_to', 'has_many' => $this->runwayIds($field, $field->type() === 'has_many'),
             'replicator' => $this->replicator($field),
             'grid' => $this->grid($field),
-            'group' => $this->values($this->fields($field->get('fields', [])), false),
+            'group' => $this->values($this->fields($field->get('fields', [])), false, false),
             'video' => null,
             'users' => null,
             'section', 'spacer', 'html', 'hidden', 'revealer' => null,
@@ -283,12 +297,18 @@ class ContentSeeder
         };
     }
 
-    /** Plain text fields often hold URLs, emails or numbers; give those a usable value rather than a sentence. */
+    /**
+     * Plain text fields often hold URLs, emails, numbers or identifiers; give those a usable value rather than a
+     * sentence, so the record still passes its own validation when saved in the control panel.
+     */
     protected function text(Field $field): string
     {
         $handle = strtolower($field->handle());
+        $rules = implode('|', array_map('strval', (array) $field->get('validate', [])));
 
         return match (true) {
+            str_contains($rules, 'alpha_num') => fake()->regexify('[a-z0-9]{8}'),
+            str_contains($rules, 'alpha_dash') => fake()->slug(2),
             $field->get('input_type') === 'url', (bool) preg_match('/url|link|href/', $handle) => 'https://example.test/',
             $field->get('input_type') === 'email', str_contains($handle, 'email') => 'site-check@example.test',
             in_array($field->get('input_type'), ['number', 'tel'], true) => (string) fake()->numberBetween(1, 100),
@@ -326,8 +346,8 @@ class ContentSeeder
     {
         return $field->fieldtype()->flattenedSetsConfig()
             ->map(fn ($set, $handle) => array_merge(
-                ['id' => Str::random(8), 'type' => $handle, 'enabled' => true],
-                $this->values($this->fields($set['fields'] ?? []), false),
+                ['id' => fake()->regexify('[a-zA-Z0-9]{8}'), 'type' => $handle, 'enabled' => true],
+                $this->values($this->fields($set['fields'] ?? []), false, false),
             ))
             ->values()
             ->all();
@@ -338,7 +358,7 @@ class ContentSeeder
         $fields = $this->fields($field->get('fields', []));
 
         return collect(range(1, 2))
-            ->map(fn () => array_merge(['id' => Str::random(8)], $this->values($fields, false)))
+            ->map(fn () => array_merge(['id' => fake()->regexify('[a-zA-Z0-9]{8}')], $this->values($fields, false, false)))
             ->all();
     }
 
@@ -410,9 +430,10 @@ class ContentSeeder
             return null;
         }
 
+        // Always a list, as the control panel submits it; Runway's processing reduces a single relationship to one ID.
         $model = $resource->model();
         $ids = $model->newQuery()->limit($multiple ? 2 : 1)->pluck($model->getKeyName())->all();
 
-        return $multiple ? $ids : ($ids[0] ?? null);
+        return $ids ?: null;
     }
 }
