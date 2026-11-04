@@ -67,9 +67,11 @@ class RunwaySeeder
     /** Resources this one needs rows from: belongs_to targets and tables its foreign keys reference. */
     protected function parents($resource, $handleForTable)
     {
-        $fromBlueprint = $resource->blueprint()->fields()->all()
-            ->filter(fn ($field) => $field->type() === 'belongs_to')
-            ->map(fn ($field) => $field->get('resource'));
+        $fields = $resource->blueprint()->fields()->all();
+        $fromBlueprint = $fields
+            ->filter(fn ($field) => $this->content->type($field) === 'belongs_to')
+            ->map(fn ($field) => $field->get('resource'))
+            ->merge($this->content->referencedResources($fields));
 
         $fromForeignKeys = collect(Schema::getForeignKeys($resource->databaseTable()))
             ->map(fn ($key) => $handleForTable[$key['foreign_table']] ?? null);
@@ -96,7 +98,7 @@ class RunwaySeeder
             $attributes = array_intersect_key($this->content->processed($blueprint, false), $columns->all());
 
             foreach ($blueprint->fields()->all() as $field) {
-                if ($field->type() === 'belongs_to' && $columns->has($field->handle()) && ! $foreignKeys->has($field->handle())) {
+                if ($this->content->type($field) === 'belongs_to' && $columns->has($field->handle()) && ! $foreignKeys->has($field->handle())) {
                     $related = Runway::findResource((string) $field->get('resource'));
                     $attributes[$field->handle()] = $related ? $this->randomKey($related->databaseTable(), $related->model()->getKeyName()) : null;
                 }
@@ -113,15 +115,33 @@ class RunwaySeeder
                 }
             }
 
-            if ($columns->has($keyName) && ! $columns[$keyName]['auto_increment']) {
-                $attributes[$keyName] = (int) DB::table($table)->max($keyName) + 1;
+            // Keys the model generates itself (HasUuids, HasUlids) are left to it. A string key without that gets a
+            // UUID from Faker, so --seed still reproduces it; max() + 1 only works for numbers.
+            $generatesKey = method_exists($model, 'usesUniqueIds') && $model->usesUniqueIds();
+
+            if ($columns->has($keyName) && ! $columns[$keyName]['auto_increment'] && ! $generatesKey) {
+                $attributes[$keyName] = in_array($columns[$keyName]['type_name'], ['char', 'varchar'], true)
+                    ? fake()->uuid()
+                    : (int) DB::table($table)->max($keyName) + 1;
             }
 
-            // Required columns the blueprint doesn't cover still need a value.
             foreach ($columns as $name => $column) {
+                // Generated columns are computed by the database; inserting a value fails.
+                if (! empty($column['generation'])) {
+                    unset($attributes[$name]);
+
+                    continue;
+                }
+
+                // Required columns the blueprint doesn't cover still need a value.
                 if (! array_key_exists($name, $attributes) && ! $column['nullable'] && $column['default'] === null
-                    && ! $column['auto_increment'] && ! in_array($name, ['created_at', 'updated_at'], true)) {
+                    && ! $column['auto_increment'] && ! in_array($name, ['created_at', 'updated_at'], true)
+                    && ! ($generatesKey && $name === $keyName)) {
                     $attributes[$name] = $this->requiredValue($column['type_name']);
+                }
+
+                if (array_key_exists($name, $attributes)) {
+                    $attributes[$name] = $this->fit($attributes[$name], $column);
                 }
             }
 
@@ -133,6 +153,29 @@ class RunwaySeeder
                 return;
             }
         }
+    }
+
+    /**
+     * Generated text can be longer than a char or varchar column allows (a Bard field saved as HTML into a
+     * varchar(255), say). Shorten it to fit, keeping HTML as a short paragraph rather than cutting a tag in half.
+     */
+    protected function fit(mixed $value, array $column): mixed
+    {
+        if (! is_string($value) || ! preg_match('/^(?:var)?char\((\d+)\)/', (string) $column['type'], $match)) {
+            return $value;
+        }
+
+        $length = (int) $match[1];
+
+        if (mb_strlen($value) <= $length) {
+            return $value;
+        }
+
+        if (str_starts_with(ltrim($value), '<') && $length > 7) {
+            return '<p>'.mb_substr(trim(strip_tags($value)), 0, $length - 7).'</p>';
+        }
+
+        return mb_substr($value, 0, $length);
     }
 
     protected function requiredValue(string $type): mixed
@@ -159,7 +202,7 @@ class RunwaySeeder
         $table = $resource->databaseTable();
 
         foreach ($resource->blueprint()->fields()->all() as $field) {
-            if ($field->type() !== 'has_many') {
+            if ($this->content->type($field) !== 'has_many') {
                 continue;
             }
 

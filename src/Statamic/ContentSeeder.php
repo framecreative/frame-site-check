@@ -239,7 +239,65 @@ class ContentSeeder
 
     public function isRelationship(Field $field): bool
     {
-        return in_array($field->type(), ['entries', 'terms', 'users', 'belongs_to', 'has_many', 'link'], true);
+        return in_array($this->type($field), ['entries', 'terms', 'users', 'belongs_to', 'has_many', 'link'], true);
+    }
+
+    /**
+     * The generator a field uses: its own fieldtype, the one site-check.yaml `statamic.fieldtypes` maps a site
+     * fieldtype to, or the Runway relationship fieldtype a site fieldtype extends.
+     */
+    public function type(Field $field): string
+    {
+        $alias = $this->config['fieldtypes'][$field->type()] ?? null;
+
+        if ($alias !== null) {
+            return is_array($alias) ? ($alias['type'] ?? $field->type()) : (string) $alias;
+        }
+
+        $fieldtype = $field->fieldtype();
+
+        foreach ([
+            'StatamicRadPack\\Runway\\Fieldtypes\\HasManyFieldtype' => 'has_many',
+            'StatamicRadPack\\Runway\\Fieldtypes\\BelongsToFieldtype' => 'belongs_to',
+        ] as $class => $type) {
+            if ($fieldtype instanceof $class) {
+                return $type;
+            }
+        }
+
+        return $field->type();
+    }
+
+    /**
+     * Runway resources whose rows this set of fields picks with the `runway_keys` generator, at any depth
+     * (inside replicator sets, grids and groups), so those resources can be seeded first.
+     *
+     * @return array<int, string>
+     */
+    public function referencedResources(LaravelCollection $fields): array
+    {
+        $handles = [];
+
+        foreach ($fields as $field) {
+            $type = $this->type($field);
+
+            if ($type === 'runway_keys') {
+                $handles[] = $this->keysSource($field)['resource'];
+            }
+
+            $nested = match ($type) {
+                'replicator' => $field->fieldtype()->flattenedSetsConfig()
+                    ->flatMap(fn ($set) => $this->fields($set['fields'] ?? [])->values()->all()),
+                'grid', 'group' => $this->fields($field->get('fields', []))->values(),
+                default => null,
+            };
+
+            if ($nested) {
+                $handles = array_merge($handles, $this->referencedResources(collect($nested)));
+            }
+        }
+
+        return array_values(array_unique(array_filter($handles)));
     }
 
     protected function value(Field $field): mixed
@@ -264,7 +322,7 @@ class ContentSeeder
             }
         }
 
-        return match ($field->type()) {
+        return match ($this->type($field)) {
             'text' => $this->text($field),
             'slug' => fake()->slug(3),
             'textarea', 'markdown' => fake()->paragraph(),
@@ -285,8 +343,9 @@ class ContentSeeder
             'assets' => $this->assets($field, $multiple),
             'entries' => $this->entryIds($field, $multiple),
             'terms' => $this->termIds($field, $multiple),
-            'link' => $this->entryIds($field, false) ? 'entry::'.$this->entryIds($field, false) : 'https://example.test',
-            'belongs_to', 'has_many' => $this->runwayIds($field, $field->type() === 'has_many'),
+            'link' => ($id = $this->entryIds($field, false)[0] ?? null) ? "entry::{$id}" : 'https://example.test',
+            'belongs_to', 'has_many' => $this->runwayIds($field, $this->type($field) === 'has_many'),
+            'runway_keys' => $this->runwayKeys($field, $multiple),
             'replicator' => $this->replicator($field),
             'grid' => $this->grid($field),
             'group' => $this->values($this->fields($field->get('fields', [])), false, false),
@@ -311,6 +370,7 @@ class ContentSeeder
             str_contains($rules, 'alpha_dash') => fake()->slug(2),
             $field->get('input_type') === 'url', (bool) preg_match('/url|link|href/', $handle) => 'https://example.test/',
             $field->get('input_type') === 'email', str_contains($handle, 'email') => 'site-check@example.test',
+            $field->get('input_type') === 'tel', str_contains($handle, 'phone') => '0400 000 000',
             in_array($field->get('input_type'), ['number', 'tel'], true) => (string) fake()->numberBetween(1, 100),
             default => fake()->sentence(4),
         };
@@ -353,11 +413,18 @@ class ContentSeeder
             ->all();
     }
 
+    /**
+     * Rows for a grid, or a site fieldtype aliased to `grid`. `rows` on the `statamic.fieldtypes` entry sets how many
+     * (a has-one field takes 1). The fieldtype is resolved first, as some fill in their `fields` config when set up.
+     */
     protected function grid(Field $field): array
     {
+        $field->fieldtype();
         $fields = $this->fields($field->get('fields', []));
+        $alias = $this->config['fieldtypes'][$field->type()] ?? null;
+        $rows = max(1, (int) (is_array($alias) ? ($alias['rows'] ?? 2) : 2));
 
-        return collect(range(1, 2))
+        return collect(range(1, $rows))
             ->map(fn () => array_merge(['id' => fake()->regexify('[a-zA-Z0-9]{8}')], $this->values($fields, false, false)))
             ->all();
     }
@@ -405,7 +472,9 @@ class ContentSeeder
             ->map->id()
             ->all();
 
-        return $multiple ? $ids : ($ids[0] ?? null);
+        // Always a list, as the control panel submits it; processing reduces a max_items: 1 field to one ID.
+        // A bare string would be indexed as an array, leaving only its first character.
+        return $ids ?: null;
     }
 
     protected function termIds(Field $field, bool $multiple): mixed
@@ -419,7 +488,43 @@ class ContentSeeder
             ->map(fn ($term) => count($taxonomies) === 1 ? $term->slug() : $term->taxonomyHandle().'::'.$term->slug())
             ->all();
 
-        return $multiple ? $ids : ($ids[0] ?? null);
+        // Always a list, as for entries. A single slug string reached Terms::process one character at a time,
+        // and an unknown "term" makes Statamic create one, which needs a logged-in user.
+        return $ids ?: null;
+    }
+
+    /**
+     * Where a `runway_keys` field picks from: the resource and column from its `statamic.fieldtypes` entry,
+     * defaulting to the field's own `resource` config and the model's primary key.
+     *
+     * @return array{resource: ?string, key: ?string}
+     */
+    protected function keysSource(Field $field): array
+    {
+        $alias = $this->config['fieldtypes'][$field->type()] ?? null;
+        $alias = is_array($alias) ? $alias : [];
+
+        return [
+            'resource' => $alias['resource'] ?? $field->get('resource'),
+            'key' => $alias['key'] ?? null,
+        ];
+    }
+
+    /** Keys of existing Runway rows (IDs, or another column such as a slug), always as a list. */
+    protected function runwayKeys(Field $field, bool $multiple): ?array
+    {
+        $runway = 'StatamicRadPack\\Runway\\Runway';
+        $source = $this->keysSource($field);
+
+        if (! class_exists($runway) || ! ($resource = $runway::findResource((string) $source['resource']))) {
+            return null;
+        }
+
+        $model = $resource->model();
+        $key = $source['key'] ?? $model->getKeyName();
+        $keys = $model->newQuery()->orderBy($model->getKeyName())->limit($multiple ? 2 : 1)->pluck($key)->all();
+
+        return $keys ?: null;
     }
 
     protected function runwayIds(Field $field, bool $multiple): mixed
