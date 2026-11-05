@@ -36,8 +36,8 @@ Look for a `findings.md` in `.site-check/reports/` from the past 7 days.
 - **Found one from another session:** ask the user whether to continue it or start a new report.
 - **None found, or a new report chosen:** start a new report.
 
-Continuing keeps the IDs of findings still present, lists the ones no longer present under Resolved since last run,
-and updates the artifact linked in that `findings.md`. See "New or continued report" in `docs/report-format.md`.
+Continuing keeps the IDs of findings still present, moves the ones no longer present to Fixed, and updates the
+artifact linked in that `findings.md`. See "New or continued report" and "Fixed findings" in `docs/report-format.md`.
 
 ## Models
 
@@ -108,7 +108,7 @@ Do every step. If the run fails (a "Step failed" line, or no crawl report), stop
    flags, unless the run reached that code and it failed (then it's a Broken finding). Changes that don't apply
    are only counted in the package's row.
 7. **Report.** Write `.site-check/reports/<run>/findings.md` in the report format, covering this run only
-   (plus Resolved since last run when continuing). Publish it as an artifact, following the user's artifact
+   (plus Fixed when continuing). Publish it as an artifact, following the user's artifact
    instructions: a new artifact for a new report, the same one for a continued report. Add its link to the
    Artifact line in `findings.md`.
 
@@ -119,6 +119,8 @@ server after deploy: migrations, `php artisan` cache, config, view or Stache cle
 builds, Composer or pnpm installs, new env values. Check each fix for these: a new migration, a changed config file,
 a changed blueprint or fieldset, a new dependency, front-end changes.
 
+- Each fix moves its finding to Fixed (green, "Not yet re-run") in `findings.md` and the artifact, per "Fixed
+  findings" in `docs/report-format.md`. Don't leave a fixed finding in Findings with a note.
 - End every reply that includes a fix with a **Commands to run after deploy** list: the commands so far, one per
   line, each with the finding it's for. Say "None" if the fixes need none.
 - The next report (continued or new, within this session) carries the list under Commands to run after deploy until

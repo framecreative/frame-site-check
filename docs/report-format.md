@@ -15,8 +15,8 @@ Every site check run produces two things:
 
 ## Rules
 
-- **Report what this run found.** Findings from earlier runs appear only when continuing a report (below), and
-  only if this run still shows them.
+- **Report what this run found.** Findings from earlier runs appear only when continuing a report (below): in
+  Findings if this run still shows them, otherwise in Fixed.
 - **One finding per root cause.** The same error on many pages or accounts is one finding; list where it occurs.
 - **Never mark a finding Confirmed without evidence in the code** (a `file:line` or the exact config) or a
   reproduction. Anything else is "Needs investigation".
@@ -123,9 +123,11 @@ checked is unused by the site, or covered by the run.">
 - Not testable: <control panel creates skipped (and the fields they needed), types in admin.skip, anything else
   the run couldn't exercise>
 
-## Resolved since last run
-<Only when continuing a report. One line per finding from the previous run that this run no longer shows:
-ID, title, and what fixed it if known. Each is listed once; the next run drops it.>
+## Fixed
+<Findings fixed while working on this report. Never left in Findings or Changelog flags. One line each:
+- **<ID>. <title>:** <what fixed it (file:line or commit)>. <"Confirmed by run <run>" when a later run no longer
+  shows it, or "Not yet re-run".>
+Leave the section out if nothing is fixed.>
 
 ## Commands to run after deploy
 <Only when fixes made while working on this report need them: migrations, cache or Stache clears, search
@@ -139,16 +141,28 @@ IDs are the site prefix and a number (`L1`, `F3`).
 
 ## New or continued report
 
-- **New report:** IDs start at 1, and a new artifact is published.
+- **New report:** IDs start at 1, the Fixed list starts empty, and a new artifact is published.
 - **Continued report** (re-running to check fixes): a finding still present keeps its ID; a new one takes the next
-  unused number; a finding no longer present moves to Resolved since last run for this one report. The same artifact
-  is updated, using the link in the previous `findings.md`.
+  unused number. The same artifact is updated, using the link in the previous `findings.md`.
+
+## Fixed findings
+
+A finding is fixed when a change for it has been made in the site, or a later run no longer shows it.
+
+- **When a fix is made,** move the finding out of Findings (or Changelog flags) into Fixed straight away, marked
+  "Not yet re-run". Don't leave it in Findings with a note, and don't change its ID.
+- **When a re-run no longer shows it,** mark it "Confirmed by run <run>". A finding the run no longer shows that
+  wasn't knowingly fixed also moves to Fixed, with "No change made; not seen in run <run>".
+- **When a re-run still shows it,** move it back to Findings with the same ID, and say the fix didn't hold.
+- **Fixed items stay in Fixed** for the rest of a continued report. A new report drops them.
+- A finding is never in Fixed and Findings at once.
 
 ## Published report
 
 When the findings report is published as a page:
 
-- Resolved since last run entries are shown in green: `#2c7551` on a light background and `#6cc191` on a dark one.
+- Fixed is its own section, in the template's order, and every item in it is green: `#2c7551` on a light background
+  and `#6cc191` on a dark one (card edge, ID and a "Fixed" label). Nothing outside Fixed is green.
 - Every finding card shows its source as a label (Broken, Bug, Changelog) beside its ID.
 - Changelog flags are cards with a neutral grey edge and no severity colour, so they don't read as failures.
 - Commands to run after deploy is one code block, ready to copy.
